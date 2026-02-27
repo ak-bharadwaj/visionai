@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Models (too large for git — download on first run)
+models/*.pt
+models/*.onnx
+models/*.pth
+models/*.pkl
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# PaddleOCR cache
+.paddleocr/
+
+# Torch cache
+*.cache

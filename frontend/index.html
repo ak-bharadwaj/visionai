@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="description" content="VisionTalk — offline AI spatial assistant for the visually impaired">
+  <title>VisionTalk</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#050508">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Ambient background orbs (CSS only) -->
+  <div class="ambient-orb orb-1"></div>
+  <div class="ambient-orb orb-2"></div>
+  <div class="ambient-orb orb-3"></div>
+
+  <!-- ─── HEADER ─────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="header-brand">
+      <span class="brand-icon" aria-hidden="true">👁</span>
+      <span class="brand-name">VisionTalk</span>
+    </div>
+
+    <div class="header-status">
+      <span id="ws-dot" class="ws-dot disconnected" title="WebSocket status"></span>
+      <span id="ws-label" class="ws-label">Connecting...</span>
+      <span id="mode-badge" class="mode-badge">NAVIGATE</span>
+      <span id="fps-display" class="fps-display">-- fps</span>
+    </div>
+
+    <div class="header-actions">
+      <button id="btn-mic" class="mic-btn-header" aria-label="Hold to speak a voice command">
+        <span class="mic-icon">🎙</span>
+      </button>
+      <button id="btn-settings" class="icon-btn" aria-label="Settings" title="Camera settings">⚙</button>
+    </div>
+  </header>
+
+  <!-- ─── SETTINGS PANEL ────────────────────────────────────── -->
+  <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-label="Camera setup">
+    <div class="settings-inner">
+      <div class="settings-titlebar">
+        <h3 class="settings-title">📡 Camera Setup</h3>
+        <button id="btn-settings-close" class="settings-close" aria-label="Close settings">✕</button>
+      </div>
+      <p class="settings-hint">Install <strong>IP Webcam</strong> on Android. Enter your phone's IP below.</p>
+      <div class="ip-row">
+        <input id="ip-input" class="ip-input" type="text"
+               placeholder="192.168.1.x:8080"
+               autocomplete="off" inputmode="url" value="">
+        <button id="btn-apply-ip" class="apply-btn">Apply</button>
+      </div>
+      <div class="qr-section">
+        <p class="settings-hint">Scan to open VisionTalk on your phone:</p>
+        <img id="qr-img" src="/qr" alt="QR code to open VisionTalk on phone" class="qr-img" loading="lazy">
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── MAIN ──────────────────────────────────────────────── -->
+  <main class="app-main">
+
+    <!-- Camera: full-width hero -->
+    <div class="camera-wrap" id="camera-wrap">
+      <img id="camera-feed" class="camera-feed" alt="Live camera feed from phone" draggable="false">
+      <canvas id="overlay-canvas" class="overlay-canvas" aria-hidden="true"></canvas>
+      <div id="camera-placeholder" class="camera-placeholder">
+        <div class="placeholder-icon" aria-hidden="true">📷</div>
+        <p class="placeholder-text">Waiting for camera...</p>
+        <p class="placeholder-hint">Set phone IP in ⚙ settings above</p>
+        <button class="placeholder-open-settings" onclick="document.getElementById('btn-settings').click()">
+          Open Settings
+        </button>
+      </div>
+      <!-- Status bar overlaid on camera bottom -->
+      <div class="camera-status-bar">
+        <span class="cam-status-dot" id="cam-mode-indicator"></span>
+        <span class="cam-status-text" id="cam-status-text">AI Processing...</span>
+      </div>
+    </div>
+
+    <!-- Guidance Banner -->
+    <div id="guidance-banner" class="guidance-banner sev0" role="status" aria-live="polite" aria-atomic="true">
+      <span id="guidance-sev-icon" class="guidance-sev-icon" aria-hidden="true"></span>
+      <span id="guidance-text" class="guidance-text">Initializing VisionTalk...</span>
+    </div>
+
+    <!-- Find Mode Banner (shown when actively searching for an object) -->
+    <div id="find-banner" class="find-banner hidden" role="status" aria-live="polite">
+      <span class="find-icon" aria-hidden="true">🔍</span>
+      <span id="find-label" class="find-label">Searching...</span>
+      <button class="find-cancel-btn" aria-label="Cancel search"
+              onclick="window.sendCommand?.({type:'command',action:'find_cancel'});this.closest('#find-banner').classList.add('hidden');window.showToast?.('Search cancelled')">
+        ✕
+      </button>
+    </div>
+
+    <!-- SOS Overlay (activated by voice "help" / "emergency") -->
+    <div id="sos-overlay" class="sos-overlay hidden" role="alert" aria-live="assertive">
+      <div class="sos-inner">
+        <div class="sos-pulse-ring"></div>
+        <span class="sos-icon" aria-hidden="true">🆘</span>
+        <p class="sos-text">SOS ACTIVATED</p>
+        <p class="sos-subtext">Calling for help...</p>
+        <button class="sos-dismiss-btn" aria-label="Dismiss SOS"
+                onclick="document.getElementById('sos-overlay').classList.add('hidden')">
+          Dismiss
+        </button>
+      </div>
+    </div>
+
+    <!-- Content Grid: 2 columns on desktop -->
+    <div class="content-grid">
+
+      <!-- LEFT: Mode + Controls -->
+      <div class="controls-col">
+
+        <p class="section-label">AI MODE</p>
+        <section class="mode-controls" aria-label="Mode selection">
+          <button id="btn-navigate" class="mode-btn active" data-mode="NAVIGATE"
+                  aria-pressed="true" title="Continuous spatial narration">
+            <span class="mode-icon" aria-hidden="true">🧭</span>
+            <span class="mode-label">NAVIGATE</span>
+            <span class="mode-desc">Spatial narrator</span>
+          </button>
+          <button id="btn-ask" class="mode-btn" data-mode="ASK"
+                  aria-pressed="false" title="Ask questions about what the camera sees">
+            <span class="mode-icon" aria-hidden="true">🧠</span>
+            <span class="mode-label">ASK</span>
+            <span class="mode-desc">Voice &amp; text Q&amp;A</span>
+          </button>
+          <button id="btn-read" class="mode-btn" data-mode="READ"
+                  aria-pressed="false" title="Read text in the camera frame via OCR">
+            <span class="mode-icon" aria-hidden="true">📖</span>
+            <span class="mode-label">READ</span>
+            <span class="mode-desc">OCR text reader</span>
+          </button>
+        </section>
+
+        <!-- ASK Row — text input, only shown in ASK mode -->
+        <div id="ask-row" class="ask-row hidden" aria-label="Type or hold mic to ask a question">
+          <input id="ask-input" class="ask-input" type="text"
+                 placeholder="Type your question here..."
+                 autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <button id="btn-send" class="send-btn" aria-label="Send question" title="Send question">
+            <span aria-hidden="true">➤</span>
+          </button>
+        </div>
+
+        <!-- Voice Activation Button -->
+        <section class="voice-activate-section" aria-label="Voice activation">
+          <button id="btn-voice-activate" class="voice-activate-btn" aria-label="Tap to activate voice commands" aria-pressed="false">
+            <div class="voice-pulse-ring"></div>
+            <span class="voice-activate-icon" aria-hidden="true">🎙</span>
+          </button>
+          <p class="voice-activate-label">Tap to speak a command</p>
+        </section>
+
+        <p class="section-label">TOOLS</p>
+        <section class="secondary-controls" aria-label="Extra tools">
+          <button id="btn-overlay" class="secondary-btn" title="Toggle bounding box overlay">
+            <span aria-hidden="true">👁</span>
+            <span class="secondary-label">Overlay</span>
+          </button>
+          <button id="btn-snapshot" class="secondary-btn" title="Save a scene snapshot to compare later">
+            <span aria-hidden="true">📸</span>
+            <span class="secondary-label">Remember</span>
+          </button>
+          <button id="btn-diff" class="secondary-btn" title="Compare current scene with saved snapshot">
+            <span aria-hidden="true">🔄</span>
+            <span class="secondary-label">What Changed?</span>
+          </button>
+        </section>
+
+        <p class="section-label">DEMO</p>
+        <section class="demo-controls" aria-label="Demo controls for judges">
+          <button id="btn-demo-mode" class="demo-btn" title="Force big text + overlay + data panel for live demos">
+            <span class="demo-btn-icon" aria-hidden="true">🎬</span>
+            <span class="demo-btn-label">Demo Mode</span>
+            <span class="demo-btn-hint">Judges: forces overlay + big text</span>
+          </button>
+          <button id="btn-detective" class="demo-btn" title="Show live AI detection data">
+            <span class="demo-btn-icon" aria-hidden="true">🔬</span>
+            <span class="demo-btn-label">Show Data</span>
+            <span class="demo-btn-hint">Live AI detection proof</span>
+          </button>
+        </section>
+
+      </div><!-- end controls-col -->
+
+      <!-- RIGHT: Live Data Panels -->
+      <div class="data-col">
+
+        <!-- Detective Panel -->
+        <div id="detective-panel" class="detective-panel hidden" aria-live="polite">
+          <div class="detective-header">
+            <span>🔬 Live AI Detection Data</span>
+            <span id="det-fps" class="det-fps">FPS: --</span>
+          </div>
+          <div id="detective-table">
+            <p class="detective-empty">No detections yet...</p>
+          </div>
+        </div>
+
+        <!-- Conversation Panel -->
+        <div id="conversation-panel" class="conversation-panel hidden">
+          <div class="convo-header">
+            <span>💬 AI Conversation</span>
+            <button id="btn-clear-convo" class="convo-clear" aria-label="Clear conversation history">✕ Clear</button>
+          </div>
+          <div id="convo-messages" class="convo-messages" role="log" aria-live="polite" aria-label="Conversation messages"></div>
+        </div>
+
+      </div><!-- end data-col -->
+
+    </div><!-- end content-grid -->
+
+  </main>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- Scripts -->
+  <script src="/static/camera.js"></script>
+  <script src="/static/overlay.js"></script>
+  <script src="/static/audio.js"></script>
+  <script src="/static/app.js"></script>
+  <script src="/static/voice.js"></script>
+  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env.local
+
+# Models (large binary files — download at runtime)
+models/*.onnx
+models/*.pt
+models/*.pth
+
+# PaddleOCR inference dir
+inference/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Secrets (keep .env.example, ignore actual .env)
+.env
+
+# Temp
+tmp/
+temp/

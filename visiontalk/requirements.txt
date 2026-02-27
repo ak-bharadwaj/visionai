@@ -1,0 +1,32 @@
+# VisionTalk — Python Dependencies
+
+# Web framework
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+websockets==12.0
+python-multipart==0.0.9
+
+# Computer Vision
+opencv-python==4.9.0.80
+ultralytics==8.1.0          # YOLOv8
+onnxruntime==1.17.1         # Fast CPU inference
+
+# Depth Estimation
+torch==2.2.0
+torchvision==0.17.0
+timm==0.9.16                # MiDaS backbone
+
+# OCR
+paddlepaddle==2.6.0
+paddleocr==2.7.3
+
+# TTS
+pyttsx3==2.90
+
+# Audio streaming
+numpy==1.26.4
+Pillow==10.2.0
+
+# Utilities
+python-dotenv==1.0.1
+aiofiles==23.2.1
