@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
     """Start pipeline on startup. Stop on shutdown."""
     loop = asyncio.get_running_loop()
     pipeline.start(loop, broadcast)
+    tts_engine.start(broadcast_fn=broadcast, event_loop=loop)
     logger.info("👁 [VisionTalk] Server started — event-driven pipeline ready.")
     yield
     pipeline.stop()
@@ -225,11 +226,11 @@ async def ws_endpoint(websocket: WebSocket):
                 if q:
                     pipeline.find_ask_question(q, input_source=src)
 
-            # Repeat: client sends last banner text; server just re-speaks it via TTS
+            # Repeat: client sends last banner text; server broadcasts it for browser TTS
             elif action == "speak":
                 text = data.get("text", "").strip()
                 if text:
-                    tts_engine.speak(text, priority=True)
+                    await broadcast({"type": "speak", "text": text})
 
     except WebSocketDisconnect:
         clients.discard(websocket)

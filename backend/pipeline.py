@@ -127,7 +127,6 @@ class PipelineRunner:
             daemon=True,
             name="DepthThread"
         ).start()
-        tts_engine.start()
         self._loop  = event_loop
         self._bcast = broadcast_fn
         self._running = True
@@ -441,7 +440,7 @@ class PipelineRunner:
             "direction":      r.direction,
             "distance":       r.distance,
             "distance_level": r.distance_level,
-            "distance_m":     round(r.distance_m, 1) if r.distance_m else 0.0,
+            "distance_ft":    round(r.distance_ft, 1) if r.distance_ft else 0.0,
             "x1": r.x1, "y1": r.y1, "x2": r.x2, "y2": r.y2,
         }
 

@@ -13,7 +13,7 @@ class SpatialResult:
     distance_level: int    # 1=very close, 2=nearby, 3=ahead, 4=far
     zone:           str    # "ground"|"mid"|"aerial"
     depth_score:    float
-    distance_m:     float  # approximate distance in metres (0.0 = unknown)
+    distance_ft:    float  # approximate distance in feet (0.0 = unknown)
     x1: int; y1: int; x2: int; y2: int
 
     @property
@@ -27,14 +27,14 @@ class SpatialResult:
 
 
 class SpatialAnalyzer:
-    def _depth_to_metres(self, depth_score: float) -> float:
+    def _depth_to_feet(self, depth_score: float) -> float:
         """
-        Piecewise-linear MiDaS depth_score → real-world metres.
+        Piecewise-linear MiDaS depth_score → real-world feet.
         Calibrated for MiDaS "Small" model outputs in indoor/outdoor environments.
 
         depth_score convention: 0.0 = far/no depth, 1.0 = very close.
 
-        Breakpoints (from spec):
+        Breakpoints (metres, then × 3.28084):
           score < 0.3 : Far zone    — 5.0 + (1.0 - score) * 5
           0.3 – 0.6   : Mid zone    — 2.0 + (0.6 - score) * 3 / 0.3
           0.6 – 0.8   : Nearby zone — 1.0 + (0.8 - score) * 1 / 0.2
@@ -43,13 +43,14 @@ class SpatialAnalyzer:
         if depth_score <= 0.0:
             return 0.0  # no depth data available
         if depth_score < 0.3:
-            return round(5.0 + (1.0 - depth_score) * 5.0, 1)
+            metres = 5.0 + (1.0 - depth_score) * 5.0
         elif depth_score < 0.6:
-            return round(2.0 + (0.6 - depth_score) * 3.0 / 0.3, 1)
+            metres = 2.0 + (0.6 - depth_score) * 3.0 / 0.3
         elif depth_score < 0.8:
-            return round(1.0 + (0.8 - depth_score) * 1.0 / 0.2, 1)
+            metres = 1.0 + (0.8 - depth_score) * 1.0 / 0.2
         else:
-            return round(max(0.1, 0.5 * (1.1 - depth_score) / 0.3), 1)
+            metres = max(0.1, 0.5 * (1.1 - depth_score) / 0.3)
+        return round(metres * 3.28084, 1)
 
     def analyze(self, det: Detection, fw: int, fh: int,
                 depth_map) -> SpatialResult:
@@ -79,7 +80,7 @@ class SpatialAnalyzer:
         elif d_score > 0.60:
             level = min(level, 2); dist_str = "nearby"
 
-        distance_m = self._depth_to_metres(d_score)
+        distance_ft = self._depth_to_feet(d_score)
 
         top_ratio = det.y1 / fh
         if top_ratio < 0.30:   zone = "aerial"
@@ -89,7 +90,7 @@ class SpatialAnalyzer:
         return SpatialResult(
             class_name=det.class_name, confidence=det.confidence,
             direction=direction, distance=dist_str, distance_level=level,
-            zone=zone, depth_score=d_score, distance_m=distance_m,
+            zone=zone, depth_score=d_score, distance_ft=distance_ft,
             x1=det.x1, y1=det.y1, x2=det.x2, y2=det.y2,
         )
 

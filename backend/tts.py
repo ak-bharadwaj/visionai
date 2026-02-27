@@ -1,4 +1,5 @@
-import queue, threading, time, logging, os
+import queue, threading, time, logging, asyncio
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -11,23 +12,19 @@ class TTSEngine:
         self._q:              queue.Queue      = queue.Queue(maxsize=5)
         self._last:           dict[str, float] = {}
         self._last_nav_time:  float            = 0.0
-        self._engine                           = None
+        self._broadcast:      Callable | None  = None
+        self._loop:           asyncio.AbstractEventLoop | None = None
 
-    def start(self):
-        """Initialize pyttsx3 and start worker thread."""
-        try:
-            import pyttsx3
-            self._engine = pyttsx3.init()
-            self._engine.setProperty("rate",   int(os.getenv("TTS_RATE",   "175")))
-            self._engine.setProperty("volume", float(os.getenv("TTS_VOLUME","1.0")))
-            logger.info("TTS engine ready.")
-        except Exception as e:
-            logger.warning(f"TTS init failed: {e}. Voice output disabled.")
+    def start(self, broadcast_fn: Callable = None, event_loop: asyncio.AbstractEventLoop = None):
+        """Store broadcast callback and start worker thread."""
+        self._broadcast = broadcast_fn
+        self._loop      = event_loop
         threading.Thread(target=self._worker, daemon=True, name="TTSThread").start()
+        logger.info("TTS relay engine ready (browser speechSynthesis).")
 
     def speak(self, text: str, priority: bool = False):
         """
-        Queue text for speech.
+        Queue text to be relayed to the browser via WebSocket {"type":"speak","text":"..."}.
         priority=True: clear queue first (for urgent alerts, level-1 distance).
         Dedup: drops if same text was spoken within DEDUP_WINDOW seconds.
         Rate limit: non-priority messages are dropped if last nav message was < NAV_RATE_LIMIT ago.
@@ -63,12 +60,14 @@ class TTSEngine:
         speak_count = 0
         while True:
             text = self._q.get()
-            if self._engine:
+            if self._broadcast and self._loop:
                 try:
-                    self._engine.say(text)
-                    self._engine.runAndWait()
+                    asyncio.run_coroutine_threadsafe(
+                        self._broadcast({"type": "speak", "text": text}),
+                        self._loop
+                    )
                 except Exception as e:
-                    logger.error(f"TTS speak error: {e}")
+                    logger.error(f"TTS relay error: {e}")
             speak_count += 1
             # Purge dedup dict every 200 speaks to prevent unbounded memory growth
             if speak_count % 200 == 0:

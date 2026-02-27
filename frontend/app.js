@@ -141,7 +141,8 @@ function connectWS() {
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      if (data.type === 'narration')       handleNarration(data);
+      if (data.type === 'speak')         handleSpeak(data);
+      else if (data.type === 'narration')       handleNarration(data);
       else if (data.type === 'answer')       handleAnswer(data);
       else if (data.type === 'reading')      handleReading(data);
       else if (data.type === 'system')       handleSystem(data);
@@ -154,6 +155,9 @@ function connectWS() {
   };
 }
 connectWS();
+
+// Conversation panel is always visible — answers accumulate as chat bubbles
+showPanel(document.getElementById('conversation-panel'));
 
 // ─── sendCommand ──────────────────────────────────────────────────
 function sendCommand(obj) {
@@ -222,6 +226,18 @@ function handleSystem(data) {
   }
 }
 
+// Browser TTS — called when server relays {"type":"speak","text":"..."}
+function handleSpeak(data) {
+  if (!data.text) return;
+  try {
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(data.text);
+    window.speechSynthesis.speak(utt);
+  } catch (e) {
+    console.warn('speechSynthesis error:', e);
+  }
+}
+
 function handleFoundObject(data) {
   document.getElementById('find-banner')?.classList.add('hidden');
   window.playSuccess?.();
@@ -286,14 +302,7 @@ function applyModeState(mode) {
   document.getElementById('find-row')?.classList.toggle('hidden', current !== 'FIND');
 
   if (current === 'ASK') {
-    const msgs = document.getElementById('convo-messages');
-    if (msgs && msgs.children.length > 0) showPanel(document.getElementById('conversation-panel'));
     setTimeout(() => document.getElementById('ask-input')?.focus(), 120);
-  }
-
-  if (current === 'READ') {
-    // Show conversation panel so read text appears
-    showPanel(document.getElementById('conversation-panel'));
   }
 
   if (current === 'FIND') {

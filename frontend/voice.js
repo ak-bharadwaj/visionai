@@ -322,7 +322,6 @@ if (!SpeechRecognition) {
     recTA.continuous      = false;
 
     let taActive      = false;   // whether tap-mode is currently listening
-    let taNoSpeechTimer = null;  // auto-stop timeout
 
     const voiceLabel = voiceBtn.parentElement?.querySelector('.voice-activate-label');
 
@@ -339,25 +338,18 @@ if (!SpeechRecognition) {
     function startTA() {
       if (taActive) return;
       setTAListening(true);
-      // Auto-stop after 5 s of no speech
-      taNoSpeechTimer = setTimeout(() => {
-        if (taActive) {
-          try { recTA.stop(); } catch (_) {}
-        }
-      }, 5000);
       try { recTA.start(); } catch (_) {}
     }
 
     function stopTA() {
-      clearTimeout(taNoSpeechTimer);
       setTAListening(false);
     }
 
     // Tap: click on desktop, touchend on mobile (prevent ghost click with preventDefault)
     voiceBtn.addEventListener('click', () => {
       if (taActive) {
-        try { recTA.stop(); } catch (_) {}
         stopTA();
+        try { recTA.stop(); } catch (_) {}
       } else {
         startTA();
       }
@@ -365,20 +357,22 @@ if (!SpeechRecognition) {
 
     recTA.onresult = (event) => {
       const transcript = event.results[0][0].transcript.trim();
-      clearTimeout(taNoSpeechTimer);
-      setTAListening(false);
       routeVoiceCommand(transcript);
     };
 
     recTA.onerror = (e) => {
-      clearTimeout(taNoSpeechTimer);
-      setTAListening(false);
-      if (e.error !== 'no-speech') window.showToast?.(`Mic error: ${e.error}`);
+      if (e.error !== 'no-speech') {
+        window.showToast?.(`Mic error: ${e.error}`);
+        setTAListening(false);
+      }
+      // no-speech: don't stop — onend will restart
     };
 
     recTA.onend = () => {
-      clearTimeout(taNoSpeechTimer);
-      setTAListening(false);
+      // If still toggled on, immediately restart for continuous listening
+      if (taActive) {
+        try { recTA.start(); } catch (_) {}
+      }
     };
   }
 }
