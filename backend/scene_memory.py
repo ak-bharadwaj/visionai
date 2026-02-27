@@ -20,13 +20,13 @@ class SceneEntry:
 
 
 class SceneMemory:
-    TTL = 8.0
+    TTL = 12.0   # seconds before a missing object is evicted from scene memory
 
     def __init__(self):
         self._entries: dict[str, SceneEntry] = {}
         self._lock = threading.Lock()
         self._announced: dict[str, float] = {}
-        self._ttl: float = 8.0   # seconds between repeated announcements
+        self._ttl: float = 12.0  # seconds between repeated announcements for same object
 
     def update(self, results: List[SpatialResult]):
         now = time.time()

@@ -204,58 +204,50 @@ class Brain:
     def _answer_door_question(self, q_lower: str,
                               detections: list, texts: List[str]) -> str:
         """
-        Heuristic door open/closed detection:
-        - Finds 'door' in detections if present.
-        - A door is likely OPEN if: no large object directly fills its bbox,
-          or OCR/YOLO finds a clear path through it.
-        - Falls back to OCR text heuristics if door not detected by YOLO
-          (COCO-80 has no 'door' class — doors appear as tvs, walls, etc.)
+        Heuristic door open/closed detection.
+        YOLOv8n on COCO-80 has NO 'door' class — searching detections for it
+        always returns None and we'd always fall through. Instead, go directly
+        to the two reliable signals we actually have:
+          1. OCR text on or near the door (push/pull/open/closed/exit/etc.)
+          2. Positional depth fallback with any visible text context.
         """
-        door_det = next(
-            (d for d in detections if hasattr(d, "class_name") and d.class_name == "door"),
-            None
-        )
-        if door_det is None:
-            # No door in YOLO detections — check OCR text for door-related words
-            DOOR_TEXT_OPEN   = {"push", "pull", "open", "welcome", "enter", "entrance"}
-            DOOR_TEXT_CLOSED = {"closed", "close", "shut", "no entry", "exit only",
-                                "do not enter", "staff only", "private"}
-            texts_lower = [t.lower() for t in texts]
-            combined = " ".join(texts_lower)
+        DOOR_TEXT_CLOSED = {"closed", "close", "shut", "no entry", "exit only",
+                            "do not enter", "staff only", "private"}
+        DOOR_TEXT_OPEN   = {"push", "pull", "open", "welcome", "enter", "entrance"}
+        texts_lower = [t.lower() for t in texts]
+        combined    = " ".join(texts_lower)
 
-            for word in DOOR_TEXT_CLOSED:
-                if word in combined:
-                    return (
-                        f"I see text that says '{word.upper()}' — the door appears to be closed or restricted."
-                    )
-            for word in DOOR_TEXT_OPEN:
-                if word in combined:
-                    return (
-                        f"I see text that says '{word.upper()}' — there may be a door or entrance here."
-                    )
+        for word in DOOR_TEXT_CLOSED:
+            if word in combined:
+                return (
+                    f"I see text that says '{word.upper()}' — "
+                    "the door appears to be closed or restricted."
+                )
+        for word in DOOR_TEXT_OPEN:
+            if word in combined:
+                return (
+                    f"I see text that says '{word.upper()}' — "
+                    "there may be an open door or entrance here."
+                )
 
-            # No text clues either — give positional fallback
-            nearby_text = ", ".join(texts[:3]) if texts else "no text visible"
+        # No OCR clues — use depth of largest detection as a proxy for open/closed
+        # (large nearby object blocking the centre = likely closed door)
+        centre_blockers = [
+            d for d in detections
+            if hasattr(d, "direction") and d.direction in ("ahead", "left", "right")
+            and hasattr(d, "distance_level") and d.distance_level <= 2
+        ]
+        if centre_blockers:
+            blocker = centre_blockers[0]
             return (
-                "I don't see a door directly, but there may be one nearby. "
-                f"Visible text: {nearby_text}."
+                f"I can see a {blocker.class_name} {blocker.distance} ahead — "
+                "something may be blocking or the door could be closed."
             )
 
-        direction = door_det.direction
-        distance  = door_det.distance
-
-        # Heuristic: depth_score — high = very close/blocking = closed
-        depth_score = getattr(door_det, "depth_score", 0.0)
-        if depth_score > 0.75:
-            state = "closed or very close"
-        elif depth_score > 0.40:
-            state = "possibly open"
-        else:
-            state = "open or far away"
-
+        nearby_text = ", ".join(texts[:3]) if texts else "no text visible"
         return (
-            f"There is a door {distance}, {direction}. "
-            f"It appears to be {state}."
+            "I don't see a door directly, but there may be one nearby. "
+            f"Visible text: {nearby_text}."
         )
 
     def _answer_medicine_question(self, question: str,
