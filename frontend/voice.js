@@ -7,15 +7,37 @@
 //  - All voice-originated questions are tagged input_source:'voice'
 //  - All chat-originated questions are tagged input_source:'chat'
 //  - Voice recognition works in ANY mode — always routes correctly
-//  - Mode commands ('navigate', 'read', 'ask') switch mode + show toast
-//  - Any other utterance → sent as ASK question (switches to ASK mode)
+//  - Mode commands ('navigate', 'read', 'ask', 'find') switch mode + show toast
+//  - In FIND mode: capture/yes/ok triggers capture flow; other utterances → find_question
 
 // ── Shared command router ────────────────────────────────────────────────────
 // Routes a transcript to the correct feature action. Returns true if a command
-// was matched, false if it was treated as a free-form ASK question.
+// was matched, false if it was treated as a free-form question.
 function routeVoiceCommand(transcript) {
   const lower = transcript.toLowerCase();
   window.showToast?.(`Heard: "${transcript}"`);
+
+  // ── FIND mode capture flow — intercept BEFORE all other handlers ──────────
+  if (window.currentMode === 'FIND') {
+    // "capture" / "find more" → start capture (ask for confirmation)
+    if (lower === 'capture' || lower === 'find more' || lower === 'take photo' || lower === 'scan') {
+      window.sendCommand?.({ type: 'command', action: 'find_start_capture' });
+      window.showToast?.('Starting capture...');
+      return true;
+    }
+    // Confirmation — user said yes to "Shall I capture?"
+    if (lower === 'yes' || lower === 'ok' || lower === 'sure' || lower === 'go ahead' ||
+        lower === 'yeah' || lower === 'yep' || lower === 'do it') {
+      window.sendCommand?.({ type: 'command', action: 'find_capture' });
+      window.showToast?.('Capturing...');
+      return true;
+    }
+    // Any other utterance in FIND mode → treat as a question about the capture
+    window.sendCommand?.({ type: 'command', action: 'find_question',
+      question: transcript, input_source: 'voice' });
+    window.showToast?.(`FIND question: "${transcript}"`);
+    return true;
+  }
 
   // Emergency SOS
   if (lower === 'help' || lower === 'emergency' || lower === 'sos' ||
@@ -71,6 +93,12 @@ function routeVoiceCommand(transcript) {
     window.sendCommand?.({ type: 'command', action: 'set_mode', mode: 'ASK' });
     window.applyModeState?.({ current_mode: 'ASK' });
     window.showToast?.('ASK mode — speak or type your question');
+    return true;
+  }
+  if (lower === 'find' || lower.includes('find mode') || lower === 'go to find') {
+    window.sendCommand?.({ type: 'command', action: 'set_mode', mode: 'FIND' });
+    window.applyModeState?.({ current_mode: 'FIND' });
+    window.showToast?.('FIND mode — say "capture" to begin');
     return true;
   }
 

@@ -22,9 +22,52 @@ window.currentMode = 'NAVIGATE';
 // Track last input source for output routing ('voice' or 'chat')
 let lastInputSource = 'chat';
 
+// FIND mode capture state (mirrors backend state machine)
+// idle → confirming → captured → awaiting_question
+let findCaptureState = 'idle';
+
 // Severity icons matching sev0–sev3 banner states
 // sev1 = danger (red), sev2 = warning (orange), sev3 = success (green)
 const SEV_ICONS = ['', '🚨', '⚠️', '✅'];
+
+// ─── Welcome Screen ───────────────────────────────────────────────
+(function initWelcome() {
+  const overlay = document.getElementById('welcome-overlay');
+  if (!overlay) return;
+
+  function pickMode(mode) {
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity 0.4s ease';
+    setTimeout(() => overlay.remove(), 400);
+    // OCR card maps to READ on backend
+    const backendMode = mode === 'OCR' ? 'READ' : mode;
+    sendCommand({ type: 'command', action: 'set_mode', mode: backendMode });
+    applyModeState({ current_mode: backendMode });
+    showToast(`${backendMode} mode activated`);
+  }
+  window._welcomePickMode = pickMode;
+
+  overlay.querySelectorAll('.welcome-card').forEach(card => {
+    card.addEventListener('click', () => pickMode(card.dataset.mode));
+  });
+
+  // Voice on welcome screen — listen for mode names
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SR) {
+    const rec = new SR();
+    rec.lang = 'en-US'; rec.continuous = false; rec.interimResults = false;
+    rec.onresult = (e) => {
+      const t = e.results[0][0].transcript.toLowerCase().trim();
+      if (t.includes('navigate')) pickMode('NAVIGATE');
+      else if (t.includes('find'))                   pickMode('FIND');
+      else if (t.includes('read') || t.includes('ocr')) pickMode('OCR');
+      else { try { rec.start(); } catch(_) {} } // unrecognised — keep listening
+    };
+    rec.onerror = () => {};
+    rec.onend   = () => { if (document.getElementById('welcome-overlay')) { try { rec.start(); } catch(_) {} } };
+    try { rec.start(); } catch(_) {}
+  }
+})();
 
 // ─── WebSocket ────────────────────────────────────────────────────
 function connectWS() {
@@ -38,8 +81,6 @@ function connectWS() {
   };
 
   ws.onclose = () => {
-    // Null out handlers on the closing socket to prevent ghost fires
-    // after a new WebSocket is already created.
     ws.onerror = null;
     ws.onclose = null;
     document.getElementById('ws-dot').className = 'ws-dot disconnected';
@@ -54,12 +95,13 @@ function connectWS() {
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      if (data.type === 'narration') handleNarration(data);
+      if (data.type === 'narration')       handleNarration(data);
       else if (data.type === 'answer')       handleAnswer(data);
       else if (data.type === 'reading')      handleReading(data);
       else if (data.type === 'system')       handleSystem(data);
       else if (data.type === 'init')         handleInit(data);
       else if (data.type === 'found_object') handleFoundObject(data);
+      else if (data.type === 'find_prompt')  handleFindPrompt(data);
     } catch (e) {
       console.error('WS parse error:', e);
     }
@@ -94,23 +136,25 @@ function handleNarration(data) {
 function handleAnswer(data) {
   const answer = data.answer || 'No answer received.';
   const src    = data.input_source || lastInputSource;
-  lastInputSource = src;  // keep in sync for subsequent btn-diff clicks
+  lastInputSource = src;
 
-  // Show answer in guidance banner (green = success)
   setBanner(answer, 3);
   if (data.fps) updateFps(data.fps);
 
-  // Add to conversation panel (always — voice or chat)
   if (data.question && data.answer) {
     addConversationTurn(data.question, data.answer, src);
   }
 
-  // Keep overlay clear during answer display
   overlay.clear();
 
-  // Stay in ASK for multi-turn — never auto-return to NAVIGATE
   if (window.currentMode === 'ASK' && src !== 'voice') {
     setTimeout(() => document.getElementById('ask-input')?.focus(), 200);
+  }
+
+  // FIND mode: after answer, reset capture state to idle for next capture
+  if (window.currentMode === 'FIND') {
+    findCaptureState = 'idle';
+    setFindCaptureBanner('idle');
   }
 }
 
@@ -119,7 +163,6 @@ function handleReading(data) {
   if (data.fps)  updateFps(data.fps);
   if (data.detections) updateDetectivePanel(data.detections, data.fps);
 
-  // If OCR found text, persist it in the conversation panel
   if (data.text && data.text !== 'No text found. Move closer or adjust angle.' &&
       data.text.startsWith('Reading:')) {
     addReadingToConversation(data.text);
@@ -134,14 +177,35 @@ function handleSystem(data) {
 }
 
 function handleFoundObject(data) {
-  // Hide the find banner — target has been located
   document.getElementById('find-banner')?.classList.add('hidden');
-  // Play success chime (Web Audio API, offline, no assets needed)
   window.playSuccess?.();
-  // Show a success toast and update the guidance banner
   if (data.text) {
     showToast(data.text, 3500);
-    setBanner(data.text, 3);  // severity 3 = green / success
+    setBanner(data.text, 3);
+  }
+}
+
+// FIND capture state machine — driven by backend prompts
+function handleFindPrompt(data) {
+  const state = data.state;  // 'confirming' | 'captured' | 'answered'
+  findCaptureState = state;
+  setFindCaptureBanner(state, data.text);
+}
+
+// ─── FIND capture banner helper ───────────────────────────────────
+function setFindCaptureBanner(state, text) {
+  const banner = document.getElementById('find-capture-banner');
+  const label  = document.getElementById('find-capture-label');
+  if (!banner) return;
+  if (state === 'idle') {
+    banner.classList.add('hidden');
+  } else {
+    banner.classList.remove('hidden');
+    if (label) label.textContent = text || (
+      state === 'confirming'       ? 'Shall I capture what\'s in front of me?' :
+      state === 'captured'         ? 'What would you like to know?' :
+      ''
+    );
   }
 }
 
@@ -151,7 +215,6 @@ function setBanner(text, severity) {
   const banner = document.getElementById('guidance-banner');
   const sev    = Math.min(severity, 3);
   banner.className = `guidance-banner sev${sev}`;
-  // Update severity icon
   const icon = document.getElementById('guidance-sev-icon');
   if (icon) icon.textContent = SEV_ICONS[sev] || '';
 }
@@ -165,7 +228,6 @@ function applyModeState(mode) {
   window.currentMode = current;
   document.getElementById('mode-badge').textContent = current;
 
-  // Update button active + aria-pressed states
   document.querySelectorAll('.mode-btn').forEach(btn => {
     const isActive = btn.dataset.mode === current;
     btn.classList.toggle('active', isActive);
@@ -174,15 +236,25 @@ function applyModeState(mode) {
 
   // Show ask-row only in ASK mode
   document.getElementById('ask-row').classList.toggle('hidden', current !== 'ASK');
+  // Show find-row only in FIND mode
+  document.getElementById('find-row')?.classList.toggle('hidden', current !== 'FIND');
 
-  // Show conversation panel if switching to ASK and it has content
   if (current === 'ASK') {
     const msgs = document.getElementById('convo-messages');
-    if (msgs && msgs.children.length > 0) {
-      showPanel(document.getElementById('conversation-panel'));
-    }
-    // Auto-focus the text input
+    if (msgs && msgs.children.length > 0) showPanel(document.getElementById('conversation-panel'));
     setTimeout(() => document.getElementById('ask-input')?.focus(), 120);
+  }
+
+  if (current === 'READ') {
+    // Show conversation panel so read text appears
+    showPanel(document.getElementById('conversation-panel'));
+  }
+
+  if (current === 'FIND') {
+    // Reset capture state when entering FIND
+    findCaptureState = 'idle';
+    setFindCaptureBanner('idle');
+    showToast('FIND — tap 📸 or say "capture" to capture scene');
   }
 }
 window.applyModeState = applyModeState;
@@ -196,9 +268,11 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
     if (mode === 'ASK') {
       showToast('ASK mode — speak or type your question');
     } else if (mode === 'NAVIGATE') {
-      showToast('NAVIGATE — spatial narration active');
+      showToast('NAVIGATE — danger alerts only');
     } else if (mode === 'READ') {
       showToast('READ — point camera at text');
+    } else if (mode === 'FIND') {
+      showToast('FIND — capture scene then ask');
     }
   });
 });
@@ -218,14 +292,36 @@ function submitQuestion() {
   sendCommand({ type: 'command', action: 'ask', question: q, input_source: 'chat' });
   input.value = '';
 
-  // Show conversation panel immediately so user sees the Q appear when answer arrives
   showPanel(document.getElementById('conversation-panel'));
-
   showToast(`Asking: "${q}"`);
 }
 document.getElementById('btn-send').addEventListener('click', submitQuestion);
 document.getElementById('ask-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') submitQuestion();
+});
+
+// ─── FIND capture flow (UI) ───────────────────────────────────────
+document.getElementById('btn-find-capture')?.addEventListener('click', () => {
+  sendCommand({ type: 'command', action: 'find_start_capture' });
+  showToast('Preparing capture...');
+});
+
+document.getElementById('btn-find-capture-yes')?.addEventListener('click', () => {
+  sendCommand({ type: 'command', action: 'find_capture' });
+  showToast('Capturing...');
+});
+
+document.getElementById('btn-find-send')?.addEventListener('click', () => {
+  const input = document.getElementById('find-question-input');
+  const q = input?.value.trim();
+  if (!q) return;
+  sendCommand({ type: 'command', action: 'find_question', question: q });
+  input.value = '';
+  showToast(`Asking: "${q}"`);
+});
+
+document.getElementById('find-question-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-find-send')?.click();
 });
 
 // ─── Secondary controls ────────────────────────────────────────────
@@ -264,12 +360,10 @@ document.getElementById('btn-settings').addEventListener('click', () => {
   else hidePanel(settingsPanel);
 });
 
-// Close button inside panel
 document.getElementById('btn-settings-close').addEventListener('click', () => {
   hidePanel(settingsPanel);
 });
 
-// Close when clicking outside the panel
 document.addEventListener('click', (e) => {
   if (!settingsPanel.classList.contains('hidden') &&
       !settingsPanel.contains(e.target) &&
@@ -288,13 +382,11 @@ document.getElementById('btn-demo-mode').addEventListener('click', () => {
   document.body.classList.toggle('demo-presentation', demoPresentationActive);
 
   if (demoPresentationActive) {
-    // Force overlay on (guard: only if not already active)
     if (!overlayActive) {
       overlayActive = true;
       document.getElementById('btn-overlay').classList.add('active');
       sendCommand({ type: 'command', action: 'toggle_overlay' });
     }
-    // Open detective panel
     detectivePanelActive = true;
     showPanel(document.getElementById('detective-panel'));
     document.getElementById('btn-detective').classList.add('active');
@@ -363,14 +455,12 @@ function addConversationTurn(question, answer, inputSource) {
   msgs.appendChild(qEl);
   msgs.appendChild(aEl);
 
-  // Keep max 4 turns (8 bubbles = 4 Q + 4 A)
   while (msgs.children.length > MAX_CONVO_TURNS * 2) {
     msgs.removeChild(msgs.firstChild);
   }
   msgs.scrollTop = msgs.scrollHeight;
 }
 
-// Reading mode — show OCR results in conversation panel so they persist
 const _readHistory = new Set();
 function addReadingToConversation(text) {
   if (_readHistory.has(text)) return;
@@ -379,9 +469,7 @@ function addReadingToConversation(text) {
   const panel = document.getElementById('conversation-panel');
   const msgs  = document.getElementById('convo-messages');
 
-  if (window.currentMode === 'READ') {
-    showPanel(panel);
-  }
+  if (window.currentMode === 'READ') showPanel(panel);
 
   const el = document.createElement('div');
   el.className   = 'bubble-read';
@@ -398,6 +486,6 @@ document.getElementById('btn-clear-convo').addEventListener('click', () => {
   document.getElementById('convo-messages').innerHTML = '';
   hidePanel(document.getElementById('conversation-panel'));
   _readHistory.clear();
-  // Also clear backend brain + OCR history so next answer is fresh
   sendCommand({ type: 'command', action: 'clear_history' });
 });
+

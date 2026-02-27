@@ -19,6 +19,34 @@
   <div class="ambient-orb orb-2"></div>
   <div class="ambient-orb orb-3"></div>
 
+  <!-- ─── WELCOME OVERLAY ────────────────────────────────────── -->
+  <!-- Shown on first load. Hidden by JS once a mode is picked.  -->
+  <div id="welcome-overlay">
+    <div class="welcome-header">
+      <span class="brand-icon" style="font-size:56px" aria-hidden="true">👁</span>
+      <span class="brand-name" style="font-size:32px;font-weight:900;letter-spacing:1px">VisionTalk</span>
+      <p class="welcome-subtitle">Your AI eyes. Choose how to begin.</p>
+    </div>
+    <div class="welcome-cards">
+      <button class="welcome-card" data-mode="NAVIGATE" aria-label="Navigate mode">
+        <span class="wc-icon" aria-hidden="true">🧭</span>
+        <span class="wc-label">NAVIGATE</span>
+        <span class="wc-desc">Warns you of danger. Answers questions about your path.</span>
+      </button>
+      <button class="welcome-card" data-mode="FIND" aria-label="Find mode">
+        <span class="wc-icon" aria-hidden="true">🔍</span>
+        <span class="wc-label">FIND</span>
+        <span class="wc-desc">Captures the scene and answers what you want to know.</span>
+      </button>
+      <button class="welcome-card" data-mode="OCR" aria-label="Read mode">
+        <span class="wc-icon" aria-hidden="true">📖</span>
+        <span class="wc-label">READ</span>
+        <span class="wc-desc">Reads any text in front of you aloud.</span>
+      </button>
+    </div>
+    <p class="welcome-voice-hint">🎙 Or say: "navigate", "find", or "read"</p>
+  </div>
+
   <!-- ─── HEADER ─────────────────────────────────────────────── -->
   <header class="app-header">
     <div class="header-brand">
@@ -100,6 +128,13 @@
       </button>
     </div>
 
+    <!-- FIND Capture Flow Banner -->
+    <div id="find-capture-banner" class="find-banner hidden" role="status" aria-live="assertive">
+      <span class="find-icon" aria-hidden="true">📸</span>
+      <span id="find-capture-label" class="find-label">Ready to capture</span>
+      <button id="btn-find-capture-yes" class="apply-btn" style="margin-left:auto;padding:6px 14px;font-size:13px">Yes</button>
+    </div>
+
     <!-- SOS Overlay (activated by voice "help" / "emergency") -->
     <div id="sos-overlay" class="sos-overlay hidden" role="alert" aria-live="assertive">
       <div class="sos-inner">
@@ -134,6 +169,12 @@
             <span class="mode-label">ASK</span>
             <span class="mode-desc">Voice &amp; text Q&amp;A</span>
           </button>
+          <button id="btn-find" class="mode-btn" data-mode="FIND"
+                  aria-pressed="false" title="Capture scene and ask questions about it">
+            <span class="mode-icon" aria-hidden="true">🔍</span>
+            <span class="mode-label">FIND</span>
+            <span class="mode-desc">Capture &amp; ask</span>
+          </button>
           <button id="btn-read" class="mode-btn" data-mode="READ"
                   aria-pressed="false" title="Read text in the camera frame via OCR">
             <span class="mode-icon" aria-hidden="true">📖</span>
@@ -148,6 +189,17 @@
                  placeholder="Type your question here..."
                  autocomplete="off" autocorrect="off" autocapitalize="sentences">
           <button id="btn-send" class="send-btn" aria-label="Send question" title="Send question">
+            <span aria-hidden="true">➤</span>
+          </button>
+        </div>
+
+        <!-- FIND Row — capture button + question input, only shown in FIND mode -->
+        <div id="find-row" class="ask-row hidden" aria-label="FIND mode capture and question">
+          <button id="btn-find-capture" class="send-btn" aria-label="Capture scene" title="Capture scene" style="padding:0 16px;font-size:18px">📸</button>
+          <input id="find-question-input" class="ask-input" type="text"
+                 placeholder="Ask about what you captured..."
+                 autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <button id="btn-find-send" class="send-btn" aria-label="Ask about capture" title="Ask about capture">
             <span aria-hidden="true">➤</span>
           </button>
         </div>

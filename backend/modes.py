@@ -1,6 +1,6 @@
 import threading
 
-VALID_MODES = {"NAVIGATE", "ASK", "READ"}
+VALID_MODES = {"NAVIGATE", "ASK", "READ", "FIND"}
 
 class ModeManager:
     def __init__(self):
@@ -26,6 +26,9 @@ class ModeManager:
 
     def is_read(self) -> bool:
         with self._lock: return self._mode == "READ"
+
+    def is_find(self) -> bool:
+        with self._lock: return self._mode == "FIND"
 
     def snapshot(self) -> dict:
         with self._lock:

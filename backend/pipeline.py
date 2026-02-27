@@ -32,22 +32,15 @@ class PipelineRunner:
         self._q_lock            = threading.Lock()
         self._pending_question: str | None = None
         self._input_source: str = "chat"   # 'voice' or 'chat'
-        # FIXED: removed _pending_frame (dead code)
-        # NEW FEATURE: Scene Snapshot
-        self._snapshot: dict | None   = None  # stores scene at time of "remember"
-        # NEW FEATURE: Find Mode
-        self._find_target: str | None = None  # object label user is searching for
-        self._find_announced: bool    = False  # prevent repeated "found" TTS
-        # NEW FEATURE: Scene Inventory on mode start
-        self._inventory_announced: bool = False  # reset each time NAVIGATE activates
-        # FIX 5: path-clear cooldown — max once every 10 seconds
-        self._last_clear_time: float = 0.0
-        # Empty-frame reassurance counter
-        self._empty_frame_count: int = 0
+        # Scene Snapshot
+        self._snapshot: dict | None   = None
+        # FIND mode: 4-state capture machine
+        self._find_capture_state: str = "idle"   # idle | confirming | captured
+        self._captured_frame = None              # frozen frame for find Q&A
+        # READ mode: last read texts for follow-up Q&A
+        self._last_read_texts: list[str] = []
         # READ no-text counter
         self._no_text_count: int = 0
-        # Find Mode hint counter
-        self._find_hint_count: int = 0
         # FIX #12: MiDaS depth runs in a background thread (stale-ok pattern)
         self._depth_input:  queue.Queue = queue.Queue(maxsize=1)
         self._depth_output: queue.Queue = queue.Queue(maxsize=1)
@@ -60,12 +53,12 @@ class PipelineRunner:
             self._input_source = input_source
 
     def take_snapshot(self):
-        """NEW: Called when user says 'remember this'."""
+        """Called when user says 'remember this'."""
         with self._q_lock:
             self._snapshot = scene_memory.get_snapshot()
 
     def get_scene_diff(self) -> str:
-        """NEW: Compare current scene to stored snapshot."""
+        """Compare current scene to stored snapshot."""
         with self._q_lock:
             snap = self._snapshot
 
@@ -80,23 +73,40 @@ class PipelineRunner:
         if disappeared: parts.append(f"Gone: {', '.join(disappeared)}")
         return ". ".join(parts) if parts else "Scene unchanged since snapshot."
 
-    def set_find_target(self, target: str):
-        """NEW: Start searching for a named object. Resets found-state."""
+    # ── FIND capture state machine ─────────────────────────────────
+    def find_start_capture(self):
+        """Transition to confirming state — TTS prompt is sent by WS handler."""
         with self._q_lock:
-            self._find_target    = target.lower().strip()
-            self._find_announced = False
-            self._find_hint_count = 0
+            self._find_capture_state = "confirming"
+
+    def find_capture(self, frame=None):
+        """
+        Freeze a frame and transition to captured state.
+        If frame is None, transitions to 'capturing' and the pipeline
+        will freeze the next live frame automatically.
+        """
+        with self._q_lock:
+            if frame is not None:
+                self._captured_frame     = frame
+                self._find_capture_state = "captured"
+            else:
+                self._find_capture_state = "capturing"   # pipeline freezes next frame
+
+    def find_ask_question(self, question: str, input_source: str = "chat"):
+        """Store question to be answered against the captured frame."""
+        with self._q_lock:
+            self._pending_question = question
+            self._input_source     = input_source
+
+    def reset_find_capture(self):
+        """Return FIND capture state machine to idle."""
+        with self._q_lock:
+            self._find_capture_state = "idle"
+            self._captured_frame     = None
 
     def clear_find_target(self):
-        """NEW: Cancel active find search."""
-        with self._q_lock:
-            self._find_target    = None
-            self._find_announced = False
-
-    def reset_inventory(self):
-        """NEW: Mark inventory as not yet announced (call when entering NAVIGATE mode)."""
-        with self._q_lock:
-            self._inventory_announced = False
+        """Alias for reset_find_capture — called by find_cancel WS action."""
+        self.reset_find_capture()
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self, event_loop: asyncio.AbstractEventLoop, broadcast_fn: Callable):
@@ -218,49 +228,80 @@ class PipelineRunner:
                 spatial_analyzer.analyze(d, w, h, depth_map) for d in detections
             ]
 
-            # NEW FEATURE: Find Mode — check if target object is now in frame
-            with self._q_lock:
-                find_target    = self._find_target
-                find_announced = self._find_announced
+            # ═══════════════════════════════════════════
+            # MODE: FIND (4-state capture flow)
+            # ═══════════════════════════════════════════
+            if mode_manager.is_find():
+                with self._q_lock:
+                    find_state   = self._find_capture_state
+                    find_frame   = self._captured_frame
+                    question     = self._pending_question
+                    input_source = self._input_source
+                    self._pending_question = None
 
-            if find_target and not find_announced:
-                match = next(
-                    (r for r in spatial_results
-                     if find_target in r.class_name.lower()),
-                    None
-                )
-                if match:
-                    found_msg = (
-                        f"Found it! {match.class_name.title()}, "
-                        f"{match.distance}, {match.direction}"
-                    )
-                    tts_engine.speak(found_msg, priority=True)
-                    self._send({"type": "found_object", "text": found_msg,
-                                "detection": self._serial(match)})
+                # Auto-freeze the live frame when state is 'capturing'
+                if find_state == "capturing":
                     with self._q_lock:
-                        self._find_announced = True
-                else:
+                        self._captured_frame     = frame
+                        self._find_capture_state = "captured"
+                    find_state  = "captured"
+                    find_frame  = frame
+
+                if find_state == "captured" and question:
+                    # Answer question against the frozen captured frame
+                    answer = brain.answer(question, find_frame, spatial_results, [])
+                    tts_engine.speak(answer, priority=True)
+                    self._send({
+                        "type":         "answer",
+                        "mode":         "FIND",
+                        "question":     question,
+                        "answer":       answer,
+                        "input_source": input_source,
+                        "frame_w":      w,
+                        "frame_h":      h,
+                        "fps":          round(self.fps, 1),
+                    })
+                    # Reset back to idle after answering
                     with self._q_lock:
-                        self._find_hint_count += 1
-                        hint_count = self._find_hint_count
-                    SEARCH_HINTS = [
-                        f"Still looking for {find_target}. Try turning slowly.",
-                        f"No {find_target} visible. Try looking left.",
-                        f"No {find_target} visible. Try looking right.",
-                        f"No {find_target} yet. Try looking up or ahead.",
-                    ]
-                    if hint_count % 30 == 15:
-                        hint = SEARCH_HINTS[(hint_count // 30) % len(SEARCH_HINTS)]
-                        tts_engine.speak(hint, priority=False)
+                        self._find_capture_state = "idle"
+                        self._captured_frame     = None
+
+                self._tick(t0)
+                continue
 
             # ═══════════════════════════════════════════
             # MODE: READ
             # ═══════════════════════════════════════════
             if mode_manager.is_read():
+                # Handle follow-up question about what was just read
+                with self._q_lock:
+                    question     = self._pending_question
+                    input_source = self._input_source
+                    self._pending_question = None
+                    last_texts   = list(self._last_read_texts)
+
+                if question:
+                    answer = brain.answer(question, frame, spatial_results, last_texts)
+                    tts_engine.speak(answer, priority=True)
+                    self._send({
+                        "type":         "answer",
+                        "mode":         "READ",
+                        "question":     question,
+                        "answer":       answer,
+                        "input_source": input_source,
+                        "frame_w":      w,
+                        "frame_h":      h,
+                        "fps":          round(self.fps, 1),
+                    })
+                    self._tick(t0)
+                    continue
+
                 if frame_count % OCR_N == 0:
                     texts = ocr_reader.read(frame, deduplicate=True)
                     if texts:
                         self._no_text_count = 0
+                        with self._q_lock:
+                            self._last_read_texts = texts
                         raw = ". ".join(texts[:3])
                         if len(raw) > 200:
                             raw = raw[:197] + "..."
@@ -350,7 +391,7 @@ class PipelineRunner:
             # ═══════════════════════════════════════════
             # MODE: NAVIGATE (default)
             # ═══════════════════════════════════════════
-            # FIX #15: reset nav_msg on every NAVIGATE entry so stale messages
+            # Reset nav_msg on every NAVIGATE entry so stale messages
             # from a prior mode switch never bleed through to this frame.
             nav_msg = ""
             scene_memory.update(spatial_results)
@@ -378,28 +419,7 @@ class PipelineRunner:
                 self._tick(t0)
                 continue
 
-            # Empty frame reassurance — if nothing detected for 10 consecutive frames
-            if not spatial_results:
-                self._empty_frame_count += 1
-                if self._empty_frame_count >= 30:
-                    tts_engine.speak("Area looks clear. Move slowly and I'll alert you.", priority=False)
-                    self._empty_frame_count = 0
-            else:
-                self._empty_frame_count = 0
-
-            # NEW FEATURE 4: One-time scene inventory when NAVIGATE mode starts
-            with self._q_lock:
-                inv_announced = self._inventory_announced
-            if not inv_announced and spatial_results:
-                from collections import Counter
-                counts = Counter(r.class_name for r in spatial_results)
-                parts  = [f"{v} {k}" if v > 1 else k for k, v in counts.most_common(5)]
-                inv_msg = "Scene loaded: " + ", ".join(parts) + " detected."
-                tts_engine.speak(inv_msg)
-                with self._q_lock:
-                    self._inventory_announced = True
-
-            # NEW FEATURE: Check approaching objects FIRST (highest priority)
+            # Check approaching objects FIRST (highest priority)
             approaching = scene_memory.get_approaching()
             if approaching:
                 obj = approaching[0]   # most dangerous approaching object
@@ -408,13 +428,13 @@ class PipelineRunner:
                 scene_memory.mark_approach_warned(obj.key)
                 nav_msg = approach_msg
 
-            # NEW FEATURE 2: Person count / social awareness
+            # Person count / social awareness (level 1 only)
             person_msg = narrator.narrate_persons(spatial_results)
             if person_msg and person_msg != nav_msg:
-                tts_engine.speak(person_msg, priority=False)
+                tts_engine.speak(person_msg, priority=True)
                 nav_msg = person_msg
 
-            # Standard new-object alerts
+            # Standard new-object alerts (danger-only filter via prioritize)
             new_alerts  = scene_memory.get_new_alerts()
             prioritized = narrator.prioritize(new_alerts)
 
@@ -425,15 +445,6 @@ class PipelineRunner:
                     tts_engine.speak(nav_msg, priority=(best.distance_level == 1))
                 for a in prioritized:
                     scene_memory.mark_announced(a.key)
-            else:
-                # Say "path clear" at most once every 10 seconds (avoid spam)
-                path_msg = narrator.path_clear(spatial_results)
-                now_t = time.time()
-                if (path_msg and path_msg != nav_msg
-                        and now_t - self._last_clear_time > 10.0):
-                    tts_engine.speak(path_msg)
-                    nav_msg = path_msg
-                    self._last_clear_time = now_t
 
             self._send({
                 "type":         "narration",

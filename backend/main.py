@@ -143,7 +143,7 @@ async def ws_endpoint(websocket: WebSocket):
                     ocr_reader.clear_history()
                 # Reset scene inventory announcement when entering NAVIGATE mode
                 if new_mode == "NAVIGATE":
-                    pipeline.reset_inventory()
+                    pass  # no-op: inventory announcement removed
 
             elif action == "ask":
                 mode_manager.set_mode("ASK")
@@ -206,6 +206,36 @@ async def ws_endpoint(websocket: WebSocket):
                     "type": "system",
                     "text": "Find mode cancelled."
                 })
+
+            # FIND capture flow actions
+            elif action == "find_start_capture":
+                # Transition to confirming state — ask user for confirmation
+                pipeline.find_start_capture()
+                await websocket.send_json({
+                    "type":  "find_prompt",
+                    "state": "confirming",
+                    "text":  "Shall I capture what's in front of me?",
+                })
+                tts_engine.speak("Shall I capture what's in front of me?", priority=True)
+
+            elif action == "find_capture":
+                # User confirmed — freeze current frame
+                import numpy as np
+                # We pass None here; the pipeline will use the live frame on next cycle
+                # Actually we store a sentinel and let pipeline grab current frame
+                pipeline.find_capture(None)   # None = use next available live frame
+                await websocket.send_json({
+                    "type":  "find_prompt",
+                    "state": "captured",
+                    "text":  "What would you like to know?",
+                })
+                tts_engine.speak("What would you like to know?", priority=True)
+
+            elif action == "find_question":
+                q   = data.get("question", "").strip()
+                src = data.get("input_source", "voice")
+                if q:
+                    pipeline.find_ask_question(q, input_source=src)
 
             # Repeat: client sends last banner text; server just re-speaks it via TTS
             elif action == "speak":

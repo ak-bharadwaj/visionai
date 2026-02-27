@@ -10,13 +10,6 @@ RISK_SCORE: dict[str, int] = {
 }
 DEFAULT_RISK = 3
 
-MIN_ALERT_LEVEL: dict[str, int] = {
-    "person": 3, "car": 4, "motorcycle": 4, "bicycle": 4,
-    "bus": 4, "truck": 4, "train": 4,
-    "chair": 2, "couch": 2, "dining table": 2, "bench": 2, "door": 2,
-}
-DEFAULT_MIN_LEVEL = 1  # everything else only alerts when very close
-
 # FIXED: "{dir}" is always used with preposition now
 # "ahead" → "Chair ahead, very close"
 # "left"  → "Chair nearby, to your left"
@@ -42,11 +35,17 @@ APPROACH_TEMPLATES: dict[str, str] = {
 }
 
 
+DANGER_ALERT_AT_2 = {"person", "car", "motorcycle", "bicycle", "bus", "truck"}
+
+
 class Narrator:
     def prioritize(self, alerts: List[SpatialResult]) -> List[SpatialResult]:
         def should_announce(r: SpatialResult) -> bool:
-            max_level = MIN_ALERT_LEVEL.get(r.class_name, DEFAULT_MIN_LEVEL)
-            return r.distance_level <= max_level
+            if r.distance_level == 1:
+                return True
+            if r.distance_level == 2 and r.class_name in DANGER_ALERT_AT_2:
+                return True
+            return False
         filtered = [r for r in alerts if should_announce(r)]
         return sorted(
             filtered,
@@ -92,44 +91,24 @@ class Narrator:
 
     def narrate_persons(self, results: List[SpatialResult]) -> str | None:
         """
-        NEW Feature 2: Social awareness — count persons and generate a context-aware
-        message. Called every NAVIGATE cycle when persons are present.
-        Returns None if no persons detected.
+        Social awareness — only report persons at level 1 (very close).
+        Returns None if no persons are very close.
         """
-        persons = [r for r in results if r.class_name == "person"]
+        persons = [r for r in results if r.class_name == "person" and r.distance_level == 1]
         if not persons:
             return None
 
-        count = len(persons)
         closest = min(persons, key=lambda r: r.distance_level)
+        count = len(persons)
 
         if count == 1:
             p = closest
-            if p.distance_level == 1:
-                return f"Stop! Person directly {p.direction}, very close"
-            elif p.distance_level == 2:
-                if p.direction == "ahead":
-                    return "Person nearby, directly ahead — someone may be addressing you"
-                return f"Person nearby, to your {p.direction}"
-            else:
-                return None  # too far — suppress
+            if p.direction == "ahead":
+                return "Stop! Person directly ahead, very close"
+            return f"Stop! Person to your {p.direction}, very close"
 
-        # Multiple persons
-        close_count = sum(1 for p in persons if p.distance_level <= 2)
-        if close_count >= 2:
-            return (
-                f"{count} people nearby — {close_count} very close, "
-                "someone may be addressing you"
-            )
-        elif close_count == 1:
-            return f"{count} people in scene, one nearby {closest.direction}"
-        else:
-            return f"{count} people detected, all at a distance"
-
-    def path_clear(self, results: List[SpatialResult]) -> str | None:
-        blocking = [r for r in results
-                    if r.direction == "ahead" and r.distance_level <= 2]
-        return "Path clear ahead" if not blocking else None
+        # Multiple very-close persons
+        return f"Stop! {count} people very close"
 
 
 narrator = Narrator()
