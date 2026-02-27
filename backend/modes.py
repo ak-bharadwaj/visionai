@@ -1,6 +1,6 @@
 import threading
 
-VALID_MODES = {"NAVIGATE", "ASK", "READ", "FIND"}
+VALID_MODES = {"NAVIGATE", "ASK", "READ", "FIND", "SCAN"}
 
 class ModeManager:
     def __init__(self):

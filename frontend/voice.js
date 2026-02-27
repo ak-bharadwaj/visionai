@@ -211,6 +211,50 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
+  // Scan / barcode mode
+  if (lower === 'scan' || lower === 'scan barcode' || lower === 'scan qr' ||
+      lower === 'read barcode' || lower === 'read qr' || lower === 'barcode' || lower === 'qr code') {
+    window.sendCommand?.({ type: 'command', action: 'set_mode', mode: 'SCAN' });
+    window.applyModeState?.({ current_mode: 'SCAN' });
+    window.showToast?.('SCAN mode — point at QR code or barcode');
+    return true;
+  }
+
+  // Natural "describe the scene" / "what am I looking at" → instant NAVIGATE answer
+  if (lower.includes('what am i looking at') || lower.includes('what do you see') ||
+      lower.includes('describe everything') || lower.includes('describe the scene') ||
+      lower.includes('describe my surroundings') || lower.includes('what is around me') ||
+      lower.includes('what is in front') || lower === 'describe' || lower === 'look around') {
+    window.sendCommand?.({ type: 'command', action: 'ask',
+      question: 'What can you see around me?', input_source: 'voice' });
+    window.showToast?.('Describing scene...');
+    return true;
+  }
+
+  // "Is it safe?" / "Can I walk?" shortcuts
+  if (lower === 'is it safe' || lower === 'can i walk' || lower === 'is the path clear' ||
+      lower === 'is it clear' || lower === 'safe to go' || lower === 'clear path') {
+    window.sendCommand?.({ type: 'command', action: 'ask',
+      question: 'Is it safe to walk forward?', input_source: 'voice' });
+    return true;
+  }
+
+  // "How many people?" shortcut
+  if (lower === 'how many people' || lower === 'anyone here' || lower === 'is anyone there' ||
+      lower === 'people around' || lower === 'people nearby') {
+    window.sendCommand?.({ type: 'command', action: 'ask',
+      question: 'How many people can you see?', input_source: 'voice' });
+    return true;
+  }
+
+  // "Which way?" / navigation shortcuts
+  if (lower === 'which way' || lower === 'which direction' || lower === 'where should i go' ||
+      lower === 'guide me' || lower === 'navigate me') {
+    window.sendCommand?.({ type: 'command', action: 'ask',
+      question: 'Which way should I go?', input_source: 'voice' });
+    return true;
+  }
+
   // Free-form ASK question
   if (window.currentMode !== 'ASK') {
     window.applyModeState?.({ current_mode: 'ASK' });

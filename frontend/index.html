@@ -7,9 +7,6 @@
   <title>VisionTalk</title>
   <link rel="manifest" href="/static/manifest.json">
   <meta name="theme-color" content="#050508">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -43,8 +40,13 @@
         <span class="wc-label">READ</span>
         <span class="wc-desc">Reads any text in front of you aloud.</span>
       </button>
+      <button class="welcome-card" data-mode="SCAN" aria-label="Scan mode">
+        <span class="wc-icon" aria-hidden="true">📷</span>
+        <span class="wc-label">SCAN</span>
+        <span class="wc-desc">Reads QR codes and barcodes instantly.</span>
+      </button>
     </div>
-    <p class="welcome-voice-hint">🎙 Or say: "navigate", "find", or "read"</p>
+     <p class="welcome-voice-hint">🎙 Or say: "navigate", "find", "read", or "scan"</p>
   </div>
 
   <!-- ─── HEADER ─────────────────────────────────────────────── -->
@@ -182,6 +184,12 @@
             <span class="mode-icon" aria-hidden="true">📖</span>
             <span class="mode-label">READ</span>
             <span class="mode-desc">OCR text reader</span>
+          </button>
+          <button id="btn-scan" class="mode-btn" data-mode="SCAN"
+                  aria-pressed="false" title="Scan QR codes and barcodes">
+            <span class="mode-icon" aria-hidden="true">📷</span>
+            <span class="mode-label">SCAN</span>
+            <span class="mode-desc">QR &amp; barcode</span>
           </button>
         </section>
 

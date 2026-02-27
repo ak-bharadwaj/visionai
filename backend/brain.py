@@ -17,6 +17,7 @@ SAFETY_KEYWORDS       = {"safe", "walk", "move", "proceed", "go", "step"}
 DIRECTION_KEYWORDS    = {"which way", "which direction", "turn left", "turn right",
                           "go left", "go right", "straight", "navigate", "direction",
                           "left or right", "where should i go", "where do i go"}
+LOCATION_KEYWORDS     = {"where", "is there", "can you see", "find", "locate", "spot"}
 
 # Max conversation turns kept in memory (each turn = question + answer)
 MAX_HISTORY = 4
@@ -61,7 +62,6 @@ class Brain:
             return False
         if any(k in q_lower for k in PERSON_COUNT_KEYWORDS): return False
         if any(k in q_words for k in SAFETY_KEYWORDS):       return False
-        LOCATION_KEYWORDS = {"where", "is there", "can you see", "find", "locate", "spot"}
         if any(k in q_lower for k in LOCATION_KEYWORDS):   return False
         if any(k in q_lower for k in DIRECTION_KEYWORDS):  return False
         return True  # nothing matched — will hit the LLM
@@ -148,7 +148,6 @@ class Brain:
             return result
 
         # 4d. Object-specific not-found guidance
-        LOCATION_KEYWORDS = {"where", "is there", "can you see", "find", "locate", "spot"}
         if any(k in q_lower for k in LOCATION_KEYWORDS):
             q_words_list = q_lower.split()
             STOPWORDS = {"where", "is", "there", "a", "the", "can", "you", "see",

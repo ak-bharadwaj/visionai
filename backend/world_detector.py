@@ -46,9 +46,17 @@ class WorldDetector:
         if self._loaded:
             return
         try:
-            from ultralytics import YOLOWorld as _YW
-            self._model = _YW("yolov8s-worldv2.pt")
-            self._model.set_classes(EXTRA_CLASSES)
+            # ultralytics < 8.1.2 has no YOLOWorld class — use YOLO directly.
+            # YOLOWorld models expose set_classes(); fallback to plain YOLO if absent.
+            from ultralytics import YOLO as _YOLO
+            try:
+                from ultralytics import YOLOWorld as _YW
+                self._model = _YW("yolov8s-worldv2.pt")
+            except ImportError:
+                self._model = _YOLO("yolov8s-worldv2.pt")
+
+            if hasattr(self._model, "set_classes"):
+                self._model.set_classes(EXTRA_CLASSES)
             self._loaded = True
             logger.info("👁 [VisionTalk] YOLOWorld ready — %d extra classes.", len(EXTRA_CLASSES))
         except Exception as exc:

@@ -45,12 +45,27 @@ const SEV_ICONS = ['', '🚨', '⚠️', '✅'];
 // ─── Mode-driven capture timers ───────────────────────────────────
 let captureTimer = null;
 
+// Adaptive NAVIGATE rate: burst when danger present, relax when clear
+const NAV_INTERVAL_DANGER = 400;   // ms — fast burst when hazard detected
+const NAV_INTERVAL_NORMAL = 800;   // ms — standard scan rate
+const NAV_INTERVAL_CLEAR  = 1500;  // ms — relax when path clear for 3+ frames
+let _navClearCount   = 0;          // consecutive clear frames
+
+function _navInterval() {
+  const mult = _batterySaver ? 2 : 1;
+  if (_navClearCount >= 3) return NAV_INTERVAL_CLEAR  * mult;
+  if (_navClearCount === 0) return NAV_INTERVAL_DANGER * mult;
+  return NAV_INTERVAL_NORMAL * mult;
+}
+
 function startNavigateCapture() {
   stopCapture();
-  captureTimer = setInterval(() => {
+  function tick() {
     if (window.currentMode !== 'NAVIGATE') return;
     window.sendFrameToBackend?.('NAVIGATE');
-  }, 2000);
+    captureTimer = setTimeout(tick, _navInterval());
+  }
+  captureTimer = setTimeout(tick, NAV_INTERVAL_NORMAL);
 }
 
 function startReadCapture() {
@@ -58,11 +73,23 @@ function startReadCapture() {
   captureTimer = setInterval(() => {
     if (window.currentMode !== 'READ') return;
     window.sendFrameToBackend?.('READ');
-  }, 3000);
+  }, 1500);
+}
+
+function startScanCapture() {
+  stopCapture();
+  captureTimer = setInterval(() => {
+    if (window.currentMode !== 'SCAN') return;
+    window.sendFrameToBackend?.('SCAN');
+  }, 800);
 }
 
 function stopCapture() {
-  if (captureTimer) { clearInterval(captureTimer); captureTimer = null; }
+  if (captureTimer) {
+    clearInterval(captureTimer);
+    clearTimeout(captureTimer);
+    captureTimer = null;
+  }
 }
 
 // Called whenever the active mode changes (from applyModeState or pickMode)
@@ -74,6 +101,9 @@ function onModeChange(newMode) {
   } else if (newMode === 'READ') {
     window.startCamera?.();
     startReadCapture();
+  } else if (newMode === 'SCAN') {
+    window.startCamera?.();
+    startScanCapture();
   } else if (newMode === 'FIND') {
     window.startCamera?.();
     // No auto-send in FIND — user triggers manually
@@ -87,7 +117,45 @@ function onModeChange(newMode) {
 }
 window.onModeChange = onModeChange;
 
-// ─── Welcome Screen ───────────────────────────────────────────────
+// ─── Battery-aware capture rate ───────────────────────────────────
+// When battery < 20%, double all capture intervals to conserve power.
+let _batterySaver = false;
+if (navigator.getBattery) {
+  navigator.getBattery().then(bat => {
+    function _checkBat() {
+      const low = bat.level < 0.20 && !bat.charging;
+      if (low !== _batterySaver) {
+        _batterySaver = low;
+        if (low) {
+          showToast('Battery low — reducing scan rate to save power');
+        }
+        // Restart current capture timer with updated rate
+        if (window.currentMode === 'NAVIGATE') startNavigateCapture();
+        else if (window.currentMode === 'READ')     startReadCapture();
+        else if (window.currentMode === 'SCAN')     startScanCapture();
+      }
+    }
+    bat.addEventListener('levelchange',   _checkBat);
+    bat.addEventListener('chargingchange', _checkBat);
+    _checkBat();
+  }).catch(() => {});
+}
+
+// ─── Ollama offline detection ─────────────────────────────────────
+// If a 'system' message mentions Ollama not running, surface it clearly.
+function _checkOllamaOffline(text) {
+  if (!text) return;
+  const lower = text.toLowerCase();
+  if (lower.includes('ollama') && (lower.includes('not running') || lower.includes('offline'))) {
+    const banner = document.getElementById('guidance-banner');
+    if (banner) {
+      banner.className = 'guidance-banner sev1';
+      document.getElementById('guidance-text').textContent =
+        'AI offline — run: ollama serve (then: ollama pull phi3:mini)';
+    }
+    showToast('Ollama not running — AI answers unavailable', 6000);
+  }
+}
 (function initWelcome() {
   const overlay = document.getElementById('welcome-overlay');
   if (!overlay) return;
@@ -119,6 +187,7 @@ window.onModeChange = onModeChange;
       if (t.includes('navigate')) pickMode('NAVIGATE');
       else if (t.includes('find'))                   pickMode('FIND');
       else if (t.includes('read') || t.includes('ocr')) pickMode('OCR');
+      else if (t.includes('scan'))                   pickMode('SCAN');
       else { try { rec.start(); } catch(_) {} } // unrecognised — keep listening
     };
     rec.onerror = () => {};
@@ -198,7 +267,18 @@ function handleNarration(data) {
     const dangerous = data.detections.filter(d => d.distance_level <= 2);
     if (dangerous.length) {
       overlay.drawNavArrow(dangerous, data.frame_w || 640, data.frame_h || 480);
+      // Burst mode — reset clear counter
+      _navClearCount = 0;
+      // Haptic: short pulse on warning, long on danger
+      const maxSev = Math.min(...dangerous.map(d => d.distance_level));
+      if (navigator.vibrate) {
+        navigator.vibrate(maxSev === 1 ? [200, 50, 200] : [80]);
+      }
+    } else {
+      _navClearCount = Math.min(_navClearCount + 1, 5);
     }
+  } else if (window.currentMode === 'NAVIGATE') {
+    _navClearCount = Math.min(_navClearCount + 1, 5);
   }
 }
 
@@ -209,6 +289,7 @@ function handleAnswer(data) {
 
   setBanner(answer, 3);
   if (data.fps) updateFps(data.fps);
+  _checkOllamaOffline(answer);
 
   if (data.question && data.answer) {
     // For voice input: question was not shown optimistically, so add full turn
@@ -248,6 +329,7 @@ function handleSystem(data) {
   if (data.text) {
     setBanner(data.text, 0);
     showToast(data.text);
+    _checkOllamaOffline(data.text);
   }
 }
 
@@ -362,6 +444,8 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
       showToast('READ — point camera at text');
     } else if (mode === 'FIND') {
       showToast('FIND — capture scene then ask');
+    } else if (mode === 'SCAN') {
+      showToast('SCAN — point at QR code or barcode');
     }
   });
 });

@@ -12,6 +12,7 @@ from backend.narrator import narrator
 from backend.brain import brain
 from backend.tts import tts_engine
 from backend.world_detector import world_detector, WORLD_N
+from backend.scanner import scanner
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,9 @@ FPS_CAP = int(__import__("os").getenv("INFERENCE_FPS", "10"))
 # Probability of running YOLOWorld on any given NAVIGATE frame
 # (replaces old frame_count % WORLD_N counter — event-driven has no frame counter)
 WORLD_P = 1.0 / max(WORLD_N, 1)
+
+# How often (seconds) to emit a holistic scene caption in NAVIGATE mode
+SCENE_CAPTION_INTERVAL = 12.0
 
 
 class PipelineRunner:
@@ -46,6 +50,8 @@ class PipelineRunner:
         self._depth_output: queue.Queue = queue.Queue(maxsize=1)
         # process_frame() timing
         self._last_frame_t: float = 0.0
+        # Scene captioning — last time we emitted a holistic caption
+        self._last_caption_t: float = 0.0
 
     # ── Public API (called from WS handler, thread-safe) ──────────
     def set_question(self, question: str, input_source: str = "chat"):
@@ -198,6 +204,8 @@ class PipelineRunner:
             result = self._process_find(frame, w, h, spatial_results)
         elif mode == "ASK":
             result = self._process_ask(frame, w, h, spatial_results)
+        elif mode == "SCAN":
+            result = self._process_scan(frame, w, h)
 
         # Update FPS
         elapsed = time.time() - t0
@@ -291,7 +299,7 @@ class PipelineRunner:
             for a in prioritized:
                 scene_memory.mark_announced(a.key)
 
-        return {
+        result_payload = {
             "type":         "narration",
             "mode":         "NAVIGATE",
             "text":         nav_msg,
@@ -302,6 +310,27 @@ class PipelineRunner:
             "frame_h":      h,
             "fps":          round(self.fps, 1),
         }
+
+        # Scene captioning — holistic description every SCENE_CAPTION_INTERVAL seconds,
+        # only when no immediate danger is active (avoid interrupting critical alerts).
+        now = time.time()
+        if (not prioritized
+                and now - self._last_caption_t >= SCENE_CAPTION_INTERVAL
+                and spatial_results):
+            self._last_caption_t = now
+            # Build caption in a background thread so it doesn't stall the WS response
+            def _emit_caption(sr=list(spatial_results), fr=frame):
+                caption = brain.answer(
+                    "Describe the scene around me in one short sentence.",
+                    fr, sr, []
+                )
+                if caption:
+                    tts_engine.speak(caption, priority=False)
+                    self._send({"type": "system", "text": f"Scene: {caption}"})
+            threading.Thread(target=_emit_caption, daemon=True,
+                             name="SceneCaption").start()
+
+        return result_payload
 
     def _process_read(self, frame, w, h, spatial_results) -> dict | None:
         with self._q_lock:
@@ -450,6 +479,35 @@ class PipelineRunner:
             "frame_w":      w,
             "frame_h":      h,
             "fps":          round(self.fps, 1),
+        }
+
+    def _process_scan(self, frame, w, h) -> dict | None:
+        """SCAN mode — detect QR codes and barcodes, speak + display result."""
+        results = scanner.scan(frame)
+        msg     = scanner.format_result(results)
+
+        if msg:
+            tts_engine.speak(msg, priority=True)
+
+        return {
+            "type":     "reading",          # reuse 'reading' type — frontend handles it
+            "mode":     "SCAN",
+            "text":     msg or "No code found. Point at a QR code or barcode.",
+            "detections": [
+                {
+                    "class_name":     r["type"],
+                    "confidence":     1.0,
+                    "direction":      "ahead",
+                    "distance":       "very close",
+                    "distance_level": 1,
+                    "distance_ft":    0.0,
+                    **(r["bbox"] or {"x1": 0, "y1": 0, "x2": 0, "y2": 0}),
+                }
+                for r in results if r.get("value")
+            ],
+            "frame_w":  w,
+            "frame_h":  h,
+            "fps":      round(self.fps, 1),
         }
 
     # ── Helpers ────────────────────────────────────────────────────

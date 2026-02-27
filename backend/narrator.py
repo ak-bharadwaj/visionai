@@ -75,8 +75,11 @@ class Narrator:
         if result.zone == "aerial" and msg:
             msg += ", overhead"
         # Append metric distance when depth data is meaningful (> 0.1 m)
-        if msg and getattr(result, "distance_m", 0.0) > 0.1:
-            msg += f", approximately {result.distance_m:.1f} metres away"
+        # SpatialResult only has distance_ft — convert to metres here.
+        dist_ft = getattr(result, "distance_ft", 0.0) or 0.0
+        dist_m  = dist_ft * 0.3048
+        if msg and dist_m > 0.1:
+            msg += f", approximately {dist_m:.1f} metres away"
         return msg
 
     def narrate_approaching(self, result: SpatialResult) -> str:
