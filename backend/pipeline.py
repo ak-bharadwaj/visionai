@@ -375,6 +375,15 @@ class PipelineRunner:
         if find_state == "captured" and question:
             answer = brain.answer(question, find_frame, spatial_results, [])
             tts_engine.speak(answer, priority=True)
+
+            # Pick the most prominent detection to highlight on the overlay
+            best_det = None
+            if spatial_results:
+                best_det = min(
+                    spatial_results,
+                    key=lambda r: (r.distance_level, -((r.x2 - r.x1) * (r.y2 - r.y1)))
+                )
+
             self._send({
                 "type":         "answer",
                 "mode":         "FIND",
@@ -385,6 +394,17 @@ class PipelineRunner:
                 "frame_h":      h,
                 "fps":          round(self.fps, 1),
             })
+
+            # Notify frontend to highlight the found object
+            if best_det:
+                self._send({
+                    "type":      "found_object",
+                    "text":      f"Found: {best_det.class_name}",
+                    "detection": self._serial(best_det),
+                    "frame_w":   w,
+                    "frame_h":   h,
+                })
+
             with self._q_lock:
                 self._find_capture_state = "idle"
                 self._captured_frame     = None

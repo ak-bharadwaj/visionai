@@ -1,6 +1,18 @@
 // app.js — main application logic
 // Requires: overlay (from overlay.js), camera (from camera.js), audio (from audio.js)
 
+// ─── Panel helpers (defined first — used before DOMContentLoaded) ─
+function showPanel(el) {
+  if (!el) return;
+  el.classList.remove('hidden');
+  el.classList.add('panel-entering');
+  el.addEventListener('animationend', () => el.classList.remove('panel-entering'), { once: true });
+}
+function hidePanel(el) {
+  if (!el) return;
+  el.classList.add('hidden');
+}
+
 // ─── Toast ────────────────────────────────────────────────────────
 let toastTimer;
 function showToast(msg, duration = 2500) {
@@ -181,6 +193,13 @@ function handleNarration(data) {
   } else if (!overlayActive && !demoPresentationActive) {
     overlay.clear();
   }
+  // Always draw nav arrow in NAVIGATE mode when dangerous objects are present
+  if (window.currentMode === 'NAVIGATE' && data.detections?.length) {
+    const dangerous = data.detections.filter(d => d.distance_level <= 2);
+    if (dangerous.length) {
+      overlay.drawNavArrow(dangerous, data.frame_w || 640, data.frame_h || 480);
+    }
+  }
 }
 
 function handleAnswer(data) {
@@ -192,7 +211,13 @@ function handleAnswer(data) {
   if (data.fps) updateFps(data.fps);
 
   if (data.question && data.answer) {
-    addConversationTurn(data.question, data.answer, src);
+    // For voice input: question was not shown optimistically, so add full turn
+    // For chat input: question bubble already shown — only append the answer
+    if (src === 'voice') {
+      addConversationTurn(data.question, data.answer, src);
+    } else {
+      addAnswerBubble(data.answer);
+    }
   }
 
   overlay.clear();
@@ -244,6 +269,12 @@ function handleFoundObject(data) {
   if (data.text) {
     showToast(data.text, 3500);
     setBanner(data.text, 3);
+  }
+  // Draw animated target ring on the detected object
+  if (data.detection) {
+    overlay.drawFindTarget(data.detection, data.frame_w || 640, data.frame_h || 480);
+    // Auto-clear the ring after 4 seconds
+    setTimeout(() => overlay.clear(), 4000);
   }
 }
 
@@ -347,6 +378,9 @@ function submitQuestion() {
     applyModeState({ current_mode: 'ASK' });
   }
 
+  // Show the question bubble immediately (optimistic) and a "thinking" placeholder
+  addQuestionBubble(q, 'chat');
+
   sendCommand({ type: 'command', action: 'ask', question: q, input_source: 'chat' });
   input.value = '';
 
@@ -407,15 +441,6 @@ document.getElementById('btn-diff').addEventListener('click', () => {
 
 // ─── Settings panel ────────────────────────────────────────────────
 const settingsPanel = document.getElementById('settings-panel');
-
-function showPanel(el) {
-  el.classList.remove('hidden');
-  el.classList.add('panel-entering');
-  el.addEventListener('animationend', () => el.classList.remove('panel-entering'), { once: true });
-}
-function hidePanel(el) {
-  el.classList.add('hidden');
-}
 
 document.getElementById('btn-settings').addEventListener('click', () => {
   if (settingsPanel.classList.contains('hidden')) showPanel(settingsPanel);
@@ -513,6 +538,51 @@ function updateDetectivePanel(detections, fps) {
 // ─── Conversation Panel ────────────────────────────────────────────
 const MAX_CONVO_TURNS = 4;
 
+/** Show just the question bubble immediately (optimistic display). */
+function addQuestionBubble(question, inputSource) {
+  const panel = document.getElementById('conversation-panel');
+  const msgs  = document.getElementById('convo-messages');
+  showPanel(panel);
+
+  const qEl = document.createElement('div');
+  qEl.className   = inputSource === 'voice' ? 'bubble-q bubble-q-voice' : 'bubble-q';
+  qEl.textContent = question;
+  msgs.appendChild(qEl);
+
+  // Add a transient "thinking" placeholder
+  const thinkEl = document.createElement('div');
+  thinkEl.className = 'bubble-a bubble-thinking';
+  thinkEl.textContent = '…';
+  thinkEl.setAttribute('data-thinking', '1');
+  msgs.appendChild(thinkEl);
+
+  while (msgs.children.length > MAX_CONVO_TURNS * 2 + 2) {
+    msgs.removeChild(msgs.firstChild);
+  }
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+/** Replace the thinking placeholder with the real answer bubble. */
+function addAnswerBubble(answer) {
+  const panel = document.getElementById('conversation-panel');
+  const msgs  = document.getElementById('convo-messages');
+  showPanel(panel);
+
+  // Remove existing thinking placeholder(s)
+  msgs.querySelectorAll('[data-thinking]').forEach(el => el.remove());
+
+  const aEl = document.createElement('div');
+  aEl.className   = 'bubble-a';
+  aEl.textContent = answer;
+  msgs.appendChild(aEl);
+
+  while (msgs.children.length > MAX_CONVO_TURNS * 2) {
+    msgs.removeChild(msgs.firstChild);
+  }
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+/** Full turn (question + answer together) — used for voice answers. */
 function addConversationTurn(question, answer, inputSource) {
   const panel = document.getElementById('conversation-panel');
   const msgs  = document.getElementById('convo-messages');
