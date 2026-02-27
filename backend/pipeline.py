@@ -44,7 +44,7 @@ from backend.modes import mode_manager
 from backend.detector import ObjectDetector
 from backend.depth import depth_estimator
 from backend.ocr import ocr_reader
-from backend.scene_memory import scene_memory
+from backend.scene_memory import scene_memory, build_scene_graph
 from backend.brain import brain
 from backend.tts import tts_engine
 from backend.scanner import scanner
@@ -53,13 +53,23 @@ from backend.tracker import object_tracker
 from backend.risk_engine import score_all as risk_score_all
 from backend.path_model import is_path_clear
 from backend.stability_filter import stability_filter, FAILSAFE_MESSAGE
-from backend.narrator import build as narrator_build, path_clear as narrator_path_clear
+from backend.narrator import (
+    build as narrator_build,
+    path_clear as narrator_path_clear,
+    build_multi as narrator_build_multi,
+    select_top_n as narrator_select_top_n,
+    build_routing as narrator_build_routing,
+)
 from backend.diagnostics import diagnostics
+from backend.world_detector import world_detector
+from backend.detector import Detection as _Detection
+from backend.temporal_fusion import temporal_fusion
 
 logger = logging.getLogger(__name__)
 
 # ── Cadence ──────────────────────────────────────────────────────────────────
-DETECT_EVERY_N = 4     # run YOLO only every N frames (tracking runs every frame)
+DETECT_EVERY_N       = 4     # run YOLO only every N frames (tracking runs every frame)
+WORLD_DETECT_EVERY_N = 10    # YOLOWorld is expensive — run less frequently
 
 # ── GPU detection (best-effort; falls back to CPU safely) ────────────────────
 def _is_gpu() -> bool:
@@ -91,6 +101,12 @@ class PipelineRunner:
         self._find_capture_state: str = "idle"
         self._captured_frame = None
 
+        # NAVIGATE destination state machine
+        # States: "IDLE" → "WAIT_DEST" → "ACTIVE"
+        self._nav_state: str = "IDLE"
+        self._nav_destination: str | None = None
+        self._nav_dest_reminder_frame: int = 0  # frame counter for periodic dest reminder
+
         # READ mode
         self._last_read_texts: list[str] = []
         self._no_text_count: int = 0
@@ -100,11 +116,15 @@ class PipelineRunner:
         self._depth_output: queue.Queue = queue.Queue(maxsize=1)
 
         # Timing
-        self._last_frame_t: float = 0.0
-        self._frame_count:  int   = 0   # total frames processed this session
+        self._last_frame_t:   float = 0.0
+        self._frame_count:    int   = 0   # total frames processed this session
+        self._world_frame_count: int = 0  # separate counter for world_detector cadence
 
         # Latest depth map (stale-ok — may be from previous frame)
         self._latest_depth_map = None
+
+        # Last received frame — used so ASK mode can answer without a new frame
+        self._last_frame: np.ndarray | None = None
 
     # ── Public API (called from WS handler, thread-safe) ─────────────────────
 
@@ -113,21 +133,60 @@ class PipelineRunner:
             self._pending_question = question
             self._input_source = input_source
 
-    def take_snapshot(self):
-        """Called when user says 'remember this'."""
+    def get_last_frame(self) -> "np.ndarray | None":
+        """Return the last camera frame received. Thread-safe read."""
         with self._q_lock:
-            self._snapshot = scene_memory.get_snapshot()
+            return self._last_frame
+
+    def take_snapshot(self):
+        """Called when user says 'remember this'.
+
+        Captures the current set of confirmed tracked class names from the
+        object tracker (which IS live in NAVIGATE mode), not scene_memory
+        (which is only populated in ASK/READ modes via scene_memory.update()).
+
+        If no confirmed tracks exist (e.g. user is in ASK/FIND/READ mode where
+        frames are not continuously processed), falls back to a fresh YOLO
+        detection on the last cached frame so the snapshot is never silently empty.
+        """
+        with self._q_lock:
+            # Read confirmed tracks directly — never call update() here as that
+            # would feed empty detections and evict live tracks.
+            live_tracks = [t for t in object_tracker.all_tracks() if t.confirmed]
+            # Store as Counter-style dict: {class_name: count}
+            snap: dict[str, int] = {}
+            for t in live_tracks:
+                snap[t.class_name] = snap.get(t.class_name, 0) + 1
+
+            # Fallback: if no confirmed tracks, run a fresh YOLO pass on the
+            # last cached frame to capture at least the currently visible objects.
+            if not snap and self._last_frame is not None and self._detector is not None:
+                try:
+                    fresh_dets = self._detector.detect(self._last_frame, conf=0.35, apply_whitelist=False)
+                    for d in fresh_dets:
+                        name = getattr(d, "class_name", "object")
+                        snap[name] = snap.get(name, 0) + 1
+                    logger.info("[Pipeline] take_snapshot: used fresh YOLO fallback — %d classes", len(snap))
+                except Exception as exc:
+                    logger.warning("[Pipeline] take_snapshot YOLO fallback failed: %s", exc)
+
+            self._snapshot = snap
 
     def get_scene_diff(self) -> str:
         with self._q_lock:
             snap = self._snapshot
         if snap is None:
             return "No snapshot taken. Say 'remember this' first."
-        current = scene_memory.get_snapshot()
-        appeared    = [v for k, v in current.items() if k not in snap]
-        disappeared = [v for k, v in snap.items()     if k not in current]
+        # Build current class-name counts from live confirmed tracker state
+        live_tracks = [t for t in object_tracker.all_tracks() if t.confirmed]
+        current: dict[str, int] = {}
+        for t in live_tracks:
+            current[t.class_name] = current.get(t.class_name, 0) + 1
+
+        appeared    = [cls for cls in current if cls not in snap]
+        disappeared = [cls for cls in snap     if cls not in current]
         parts = []
-        if appeared:    parts.append(f"New objects: {', '.join(appeared)}")
+        if appeared:    parts.append(f"New: {', '.join(appeared)}")
         if disappeared: parts.append(f"Gone: {', '.join(disappeared)}")
         return ". ".join(parts) if parts else "Scene unchanged since snapshot."
 
@@ -177,12 +236,24 @@ class PipelineRunner:
         object_tracker.reset()
         stability_filter.reset()
         scene_memory.clear()
+        # Reset NAVIGATE state machine so each new NAVIGATE entry starts fresh
+        with self._q_lock:
+            self._nav_state       = "IDLE"
+            self._nav_destination = None
+
+    def set_nav_destination(self, destination: str):
+        """Store the navigation destination and advance state to ACTIVE."""
+        with self._q_lock:
+            self._nav_destination = destination
+            self._nav_state       = "ACTIVE"
+        logger.info("[Pipeline] NAV destination set: %r → state=ACTIVE", destination)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self, event_loop: asyncio.AbstractEventLoop, broadcast_fn: Callable):
         self._detector = ObjectDetector()
         depth_estimator.load()
+        world_detector.load()
         # PaddleOCR pre-load in background
         threading.Thread(
             target=ocr_reader._ensure_loaded,
@@ -232,18 +303,54 @@ class PipelineRunner:
         Returns a payload dict to send to the frontend, or None.
         """
         t0 = time.time()
+
+        # Guard against None or empty frames (camera disconnect / bad decode)
+        if frame is None or frame.size == 0:
+            logger.warning("[VisionTalk] process_frame received empty/None frame — skipping.")
+            return None
+
         h, w = frame.shape[:2]
         self._frame_count += 1
 
-        # ── Detection (every DETECT_EVERY_N frames) ───────────────────────────
-        if self._frame_count % DETECT_EVERY_N == 0:
+        # Cache the last frame for ASK mode (so it can answer without a new frame)
+        with self._q_lock:
+            self._last_frame = frame
+
+        # ── Detection (adaptive cadence) ──────────────────────────────────────
+        # Run YOLO more frequently when many objects are actively tracked so
+        # fast-moving objects get refreshed bbox data.  With few/no tracks the
+        # default cadence (DETECT_EVERY_N) keeps CPU load low.
+        _n_tracks = len(object_tracker.all_tracks())
+        _cadence  = 2 if _n_tracks > 6 else (3 if _n_tracks > 3 else DETECT_EVERY_N)
+        _ran_detector = self._frame_count % _cadence == 0
+        if _ran_detector:
             detections = self._detector.detect(frame)
-            # Log filtered detections for diagnostics
-            for d in detections:
-                if d.confidence >= 0.60:
-                    diagnostics.object_confirmed(0, d.class_name, 1)
+            # Merge YOLOWorld extra-class detections (doors, stairs, etc.)
+            # Only run YOLOWorld every WORLD_DETECT_EVERY_N frames — it is
+            # significantly more expensive than standard YOLO.
+            self._world_frame_count += 1
+            if self._world_frame_count % WORLD_DETECT_EVERY_N == 0:
+                world_dets = world_detector.detect(frame, conf=0.35)
+                for wd in world_dets:
+                    detections.append(_Detection(
+                        class_id=-1,
+                        class_name=wd["class_name"],
+                        confidence=wd["confidence"],
+                        x1=wd["x1"], y1=wd["y1"], x2=wd["x2"], y2=wd["y2"],
+                    ))
+            # NOTE: diagnostics.object_confirmed() is called post-tracking (in
+            # _process_navigate) once track IDs are assigned and frames_seen is
+            # known.  Do NOT call it here — tracker hasn't run yet.
         else:
             detections = []   # tracking runs every frame even when no new detections
+
+        # ── Temporal fusion — stabilise detections before tracker sees them ──
+        # Fuses raw YOLO output across FUSION_HISTORY frames: smooths boxes,
+        # raises fused confidence on multi-frame detections, and suppresses
+        # single-frame low-confidence hallucinations.
+        detections = temporal_fusion.update(
+            detections, has_new_detections=_ran_detector
+        )
 
         # ── Depth — queue frame, read latest result (stale-ok) ────────────────
         try:
@@ -257,17 +364,21 @@ class PipelineRunner:
         depth_map = self._latest_depth_map
 
         # ── Mode dispatch ─────────────────────────────────────────────────────
-        if mode == "NAVIGATE":
-            result = self._process_navigate(frame, w, h, detections, depth_map)
-        elif mode == "READ":
-            result = self._process_read(frame, w, h)
-        elif mode == "FIND":
-            result = self._process_find(frame, w, h)
-        elif mode == "ASK":
-            result = self._process_ask(frame, w, h)
-        elif mode == "SCAN":
-            result = self._process_scan(frame, w, h)
-        else:
+        try:
+            if mode == "NAVIGATE":
+                result = self._process_navigate(frame, w, h, detections, depth_map)
+            elif mode == "READ":
+                result = self._process_read(frame, w, h)
+            elif mode == "FIND":
+                result = self._process_find(frame, w, h)
+            elif mode == "ASK":
+                result = self._process_ask(frame, w, h)
+            elif mode == "SCAN":
+                result = self._process_scan(frame, w, h)
+            else:
+                result = None
+        except Exception as _exc:
+            logger.exception("[Pipeline] process_frame mode=%s EXCEPTION: %s", mode, _exc)
             result = None
 
         elapsed = time.time() - t0
@@ -285,9 +396,51 @@ class PipelineRunner:
           track → depth update → risk score → system health →
           narration gate → cooldown → speak → payload
         """
+        try:
+            return self._process_navigate_inner(frame, w, h, detections, depth_map)
+        except Exception as _exc:
+            logger.exception("[Pipeline] _process_navigate EXCEPTION: %s", _exc)
+            return self._navigate_payload(w, h, "", [], severity=0)
+
+    def _process_navigate_inner(self, frame, w, h, detections, depth_map) -> dict:
+
+        # ── NAV state machine ─────────────────────────────────────────────────
+        # IDLE → WAIT_DEST: first frame in NAVIGATE, prompt for destination
+        # WAIT_DEST: hazard narration active but no destination set yet
+        # ACTIVE: full navigation with destination context in narrations
+        with self._q_lock:
+            _nav_state = self._nav_state
+            _nav_dest  = self._nav_destination
+
+        if _nav_state == "IDLE":
+            with self._q_lock:
+                self._nav_state = "WAIT_DEST"
+            tts_engine.speak(
+                "Navigate mode. Where would you like to go? "
+                "Say your destination after the beep.",
+                priority=True,
+            )
+            logger.info("[Pipeline] NAV: IDLE → WAIT_DEST — prompted for destination")
+
+        # ── 1b. Periodic destination reminder (every 30 navigate frames) ─────
+        # In ACTIVE state, briefly remind the user of their destination so the
+        # navigation feels purposeful, without overloading the hazard narration.
+        _NAV_DEST_REMINDER_INTERVAL = 30
+        if _nav_state == "ACTIVE" and _nav_dest:
+            self._nav_dest_reminder_frame += 1
+            if self._nav_dest_reminder_frame >= _NAV_DEST_REMINDER_INTERVAL:
+                self._nav_dest_reminder_frame = 0
+                tts_engine.speak(f"Heading to {_nav_dest}.", priority=False)
+                logger.debug("[Pipeline] NAV destination reminder: %r", _nav_dest)
+        else:
+            self._nav_dest_reminder_frame = 0
 
         # ── 1. Tracking (every frame) ─────────────────────────────────────────
         confirmed = object_tracker.update(detections, w, h)
+
+        # Log confirmed objects now that real track IDs and frames_seen are known
+        for obj in confirmed:
+            diagnostics.object_confirmed(obj.id, obj.class_name, obj.frames_seen)
 
         # ── 2. Depth update — only for confirmed objects ───────────────────────
         if depth_map is not None:
@@ -297,7 +450,26 @@ class PipelineRunner:
                 )
                 if depth_score > 0.0:
                     dist_m = depth_estimator.metres_from_score(depth_score)
-                    obj.update_distance(dist_m)
+                    # Depth jump rejection: discard single-frame depth spikes
+                    # that are physically implausible (> DEPTH_JUMP_REJECT_M
+                    # change from the last accepted smoothed value).  This
+                    # prevents monocular depth flicker from polluting velocity.
+                    if depth_estimator.depth_jump_reject(
+                        obj.smoothed_distance_m, dist_m
+                    ):
+                        logger.debug(
+                            "[Pipeline] Depth jump rejected for %s id=%d: "
+                            "%.2f m → %.2f m (Δ=%.2f m)",
+                            obj.class_name, obj.id,
+                            obj.smoothed_distance_m, dist_m,
+                            abs(dist_m - obj.smoothed_distance_m),
+                        )
+                        # Measurement rejected — depth is stale for this frame.
+                        obj._depth_stale_frames += 1
+                        diagnostics.depth_measurement_rejected("jump_reject")
+                    else:
+                        obj.update_distance(dist_m)
+                        diagnostics.depth_measurement_accepted()
                     # Check depth stability and log if suppressed
                     if not depth_estimator.is_depth_stable(
                         depth_map, obj.x1, obj.y1, obj.x2, obj.y2
@@ -306,9 +478,16 @@ class PipelineRunner:
                             depth_map, obj.x1, obj.y1, obj.x2, obj.y2
                         )
                         diagnostics.depth_suppressed(obj.id, obj.class_name, var)
+                else:
+                    # No depth score available for this region this frame.
+                    obj._depth_stale_frames += 1
+        else:
+            # No depth map available at all — all confirmed objects go stale.
+            for obj in confirmed:
+                obj._depth_stale_frames += 1
 
         # ── 3. Risk scoring ───────────────────────────────────────────────────
-        risk_score_all(confirmed)   # attaches .risk_score and .risk_level in-place
+        risk_score_all(confirmed, frame_w=w, frame_h=h)
 
         # ── 4. Stair / drop detection (high priority, independent of tracker) ──
         stair_warned = False
@@ -332,17 +511,22 @@ class PipelineRunner:
         with self._q_lock:
             nav_question     = self._pending_question
             nav_input_source = self._input_source
+            _nav_dest_now    = self._nav_destination
             self._pending_question = None
 
         if nav_question:
-            # Use spatial context from confirmed objects
+            # Use spatial context from confirmed objects + destination if set
             context_strs = [
                 f"{o.class_name} ({o.direction}, {o.smoothed_distance_m:.1f}m)"
                 for o in confirmed[:5]
             ]
-            answer = brain.answer(nav_question, frame, [], [])
+            if _nav_dest_now:
+                context_strs.insert(0, f"Navigating to: {_nav_dest_now}")
+            answer = brain.answer(nav_question, frame, confirmed, [])
             tts_engine.speak(answer, priority=True)
-            self._send({
+            # Return the dict instead of calling self._send() to avoid
+            # the run_in_executor deadlock (same fix applied to FIND mode).
+            return {
                 "type":         "answer",
                 "mode":         "NAVIGATE",
                 "question":     nav_question,
@@ -352,12 +536,16 @@ class PipelineRunner:
                 "frame_w":      w,
                 "frame_h":      h,
                 "fps":          round(self.fps, 1),
-            })
-            return None
+            }
 
-        # ── 7. Select highest-risk object ─────────────────────────────────────
+        # ── 7. Select highest-risk object (capped at MAX_NARRATIONS_PER_FRAME) ──
+        # select_top_n() returns risk-sorted candidates already capped at the
+        # per-frame limit so the TTS queue is never flooded.  We still process
+        # only the single best object through the full gate/cooldown/build path
+        # (compound narrations are handled by build_multi inside step 10).
         from backend.narrator import select_highest_risk
-        best = select_highest_risk(confirmed)
+        _top_candidates = narrator_select_top_n(confirmed, n=MAX_NARRATIONS_PER_FRAME)
+        best = _top_candidates[0] if _top_candidates else select_highest_risk(confirmed)
         spoken_text = ""
         severity    = 0
 
@@ -371,7 +559,7 @@ class PipelineRunner:
                 )
             else:
                 # ── 9. Cooldown gate ──────────────────────────────────────────
-                cd_allowed, cd_reason = stability_filter.narration_allowed(best.risk_level)
+                cd_allowed, cd_reason = stability_filter.narration_allowed(best.risk_level, obj=best)
                 if not cd_allowed:
                     diagnostics.narration_suppressed(
                         best.id, best.class_name, cd_reason,
@@ -379,44 +567,78 @@ class PipelineRunner:
                     )
                 else:
                     # ── 10. Build and speak narration ─────────────────────────
-                    spoken_text = narrator_build(best)
+                    # Try multi-object narration first (two hazards in different
+                    # directions).  Fall back to single-object build() if only
+                    # one eligible object or both are in the same direction.
+                    multi_text = narrator_build_multi(confirmed, max_objects=2)
+                    spoken_text = multi_text if multi_text is not None else narrator_build(best)
+                    # Append destination context to every narration so the user
+                    # always knows where they're heading while navigating.
+                    if _nav_state == "ACTIVE" and _nav_dest:
+                        spoken_text = f"Heading to {_nav_dest}. {spoken_text}"
                     priority    = (best.risk_level == "HIGH")
                     tts_engine.speak(spoken_text, priority=priority)
-                    severity = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(best.risk_level, 0)
+                    # nav-sev1 = RED (danger), nav-sev2 = AMBER, nav-sev3 = GREEN (clear)
+                    severity = {"HIGH": 1, "MEDIUM": 2, "LOW": 3}.get(best.risk_level, 0)
                     diagnostics.narration_emitted(
                         best.id, best.class_name, best.risk_level,
                         best.risk_score, best.confidence,
                         best.smoothed_distance_m, spoken_text,
+                        n_visible_objects=len(confirmed),
                     )
                     diagnostics.record_hazard_detection_time(
                         best.first_seen_t, time.time()
                     )
+                    # ── 10b. Proactive routing guidance ──────────────────────
+                    # After describing the hazard, tell the user which direction
+                    # to go.  Only fires when the centre zone is blocked; side
+                    # hazards don't need extra direction instructions.
+                    routing_text = narrator_build_routing(confirmed, frame_w=w)
+                    if routing_text:
+                        tts_engine.speak(routing_text, priority=False)
 
         elif not stair_warned:
             # ── 11. Path clear check ──────────────────────────────────────────
-            path_ok, cd_reason = stability_filter.narration_allowed("MEDIUM")
-            if path_ok and is_path_clear(depth_map, h, w, confirmed):
+            path_now_clear = is_path_clear(depth_map, h, w, confirmed)
+            if stability_filter.path_clear_allowed(path_now_clear):
                 spoken_text = narrator_path_clear()
                 tts_engine.speak(spoken_text, priority=False)
 
         return self._navigate_payload(w, h, spoken_text, confirmed, severity)
 
     def _navigate_payload(self, w, h, text, confirmed, severity) -> dict:
+        # Include all currently tracked objects in the overlay payload so the
+        # frontend can draw bounding boxes even for tentative (unconfirmed)
+        # objects.  Narration / TTS decisions remain gated on `confirmed` only.
+        all_tracks = object_tracker.all_tracks()
+        with self._q_lock:
+            _nav_state = self._nav_state
+            _nav_dest  = self._nav_destination
         return {
             "type":         "narration",
             "mode":         "NAVIGATE",
             "text":         text,
             "severity":     severity,
-            "detections":   [self._serial_tracked(o) for o in confirmed],
+            "detections":   [self._serial_tracked(o) for o in all_tracks],
             "show_overlay": mode_manager.snapshot().get("show_overlay", True),
             "frame_w":      w,
             "frame_h":      h,
             "fps":          round(self.fps, 1),
+            "scene_graph":  build_scene_graph(all_tracks),
+            "nav_state":    _nav_state,
+            "nav_destination": _nav_dest,
         }
 
     # ── READ mode ─────────────────────────────────────────────────────────────
 
     def _process_read(self, frame, w, h) -> dict | None:
+        try:
+            return self._process_read_inner(frame, w, h)
+        except Exception as _exc:
+            logger.exception("[Pipeline] _process_read EXCEPTION: %s", _exc)
+            return None
+
+    def _process_read_inner(self, frame, w, h) -> dict | None:
         with self._q_lock:
             question     = self._pending_question
             input_source = self._input_source
@@ -426,7 +648,9 @@ class PipelineRunner:
         if question:
             answer = brain.answer(question, frame, [], last_texts)
             tts_engine.speak(answer, priority=True)
-            self._send({
+            # Return the dict instead of calling self._send() to avoid
+            # the run_in_executor deadlock (same fix applied to FIND and NAVIGATE).
+            return {
                 "type":         "answer",
                 "mode":         "READ",
                 "question":     question,
@@ -435,8 +659,7 @@ class PipelineRunner:
                 "frame_w":      w,
                 "frame_h":      h,
                 "fps":          round(self.fps, 1),
-            })
-            return None
+            }
 
         texts = ocr_reader.read(frame, deduplicate=True)
         if texts:
@@ -470,6 +693,13 @@ class PipelineRunner:
     # ── FIND mode ─────────────────────────────────────────────────────────────
 
     def _process_find(self, frame, w, h) -> dict | None:
+        try:
+            return self._process_find_inner(frame, w, h)
+        except Exception as _exc:
+            logger.exception("[Pipeline] _process_find EXCEPTION: %s", _exc)
+            return None
+
+    def _process_find_inner(self, frame, w, h) -> dict | None:
         with self._q_lock:
             find_state   = self._find_capture_state
             find_frame   = self._captured_frame
@@ -484,10 +714,34 @@ class PipelineRunner:
             find_state = "captured"
             find_frame = frame
 
+        # If a question arrived but the scene hasn't been explicitly captured,
+        # fall back to the latest live frame rather than silently dropping the
+        # question.  This removes the double-confirmation requirement — the user
+        # can ask a question without pressing "Yes" first.
+        if question and find_state != "captured":
+            find_frame = self._last_frame   # already cached under _q_lock above
+            if find_frame is not None:
+                find_state = "captured"
+
         if find_state == "captured" and question:
-            answer = brain.answer(question, find_frame, [], [])
+            # Run detector on the captured frame so brain has real object detections
+            # Use a lower confidence threshold (0.35) for query mode — we want
+            # recall over precision here (user is asking about a specific object).
+            # apply_whitelist=False: FIND mode must be able to locate ANY object
+            # (cups, bottles, phones, etc.), not just the 12 navigation classes.
+            find_detections = self._detector.detect(find_frame, conf=0.35, apply_whitelist=False) if find_frame is not None else []
+            logger.info("[Pipeline] FIND answer: q=%r detections=%d", question, len(find_detections))
+            answer = brain.answer(question, find_frame, find_detections, [])
             tts_engine.speak(answer, priority=True)
-            self._send({
+            with self._q_lock:
+                self._find_capture_state = "idle"
+                self._captured_frame     = None
+            # Return the answer dict so the caller (main.py) can broadcast it via
+            # the event loop.  Do NOT use self._send() here — it would deadlock
+            # because the event loop is already blocked waiting for this executor
+            # thread to return (run_in_executor), so run_coroutine_threadsafe()
+            # would time out and the answer would never reach the frontend.
+            return {
                 "type":         "answer",
                 "mode":         "FIND",
                 "question":     question,
@@ -496,41 +750,112 @@ class PipelineRunner:
                 "frame_w":      w,
                 "frame_h":      h,
                 "fps":          round(self.fps, 1),
-            })
-            with self._q_lock:
-                self._find_capture_state = "idle"
-                self._captured_frame     = None
+            }
 
         return None
 
     # ── ASK mode ──────────────────────────────────────────────────────────────
 
-    def _process_ask(self, frame, w, h) -> dict | None:
-        with self._q_lock:
-            question     = self._pending_question
-            input_source = self._input_source
-            self._pending_question = None
+    def process_ask_direct(self, frame: "np.ndarray | None", question: str,
+                           input_source: str = "chat") -> "dict | None":
+        """
+        Process an ASK question directly, bypassing the shared _pending_question
+        slot.  This eliminates the race condition where a concurrent NAVIGATE
+        frame processed in the thread pool drains _pending_question before
+        _process_ask gets to read it.
 
+        frame may be None — in that case detection is skipped and the answer
+        is built from tracker state and brain knowledge only.
+
+        Called from main.py's 'ask' action handler and the STT dispatcher.
+        The caller must NOT call set_question() beforehand — this method owns
+        the entire question lifecycle.
+        """
+        logger.info(
+            "[VisionTalk] process_ask_direct called: question=%r src=%r frame=%s",
+            question, input_source,
+            "present (%dx%d)" % (frame.shape[1], frame.shape[0]) if frame is not None else "None",
+        )
+        try:
+            if frame is not None:
+                h_px, w_px = frame.shape[:2]
+            else:
+                h_px, w_px = 480, 640   # safe defaults; detection will be skipped
+            result = self._process_ask(frame, w_px, h_px,
+                                       question=question, input_source=input_source)
+            logger.info(
+                "[VisionTalk] process_ask_direct result: %s",
+                {k: v for k, v in result.items() if k != "context"} if result else None,
+            )
+            return result
+        except Exception as exc:
+            logger.exception("[VisionTalk] process_ask_direct EXCEPTION: %s", exc)
+            # Return a safe fallback answer so the frontend always gets a reply
+            return {
+                "type":         "answer",
+                "mode":         "ASK",
+                "question":     question,
+                "answer":       "Sorry, I ran into an error processing your question. Please try again.",
+                "input_source": input_source,
+                "context":      [],
+                "frame_w":      640,
+                "frame_h":      480,
+                "fps":          0.0,
+            }
+
+    def _process_ask(self, frame, w, h, *,
+                     question: "str | None" = None,
+                     input_source: "str | None" = None) -> "dict | None":
+        """
+        Internal ASK handler.
+
+        Can be called in two ways:
+          1. Routed from process_frame() — reads question from shared state.
+          2. Called directly via process_ask_direct() — question is passed in.
+
+        frame may be None — detection is skipped but brain.answer() still runs.
+        """
+        if question is None:
+            # Routed from process_frame via mode dispatch — read shared state.
+            with self._q_lock:
+                question     = self._pending_question
+                input_source = self._input_source
+                self._pending_question = None
+        # If still no question (already consumed by a concurrent call), bail.
         if not question:
             return None
+        if input_source is None:
+            input_source = "chat"
+
+        # Run a fresh low-confidence detection pass on this frame for query accuracy.
+        # 0.35 threshold gives better recall than the 0.60 NAVIGATE safety gate.
+        # Skip detection entirely if no frame is available (frame=None).
+        if frame is not None:
+            query_detections = self._detector.detect(frame, conf=0.35)
+        else:
+            query_detections = []
+        # Merge with any currently tracked objects so we don't lose context
+        tracked = object_tracker.all_tracks()
+        all_detections = query_detections if query_detections else tracked
 
         needs_llm = brain.needs_llm(question)
         if needs_llm:
             tts_engine.speak("Let me check that.", priority=True)
 
         q_lower = question.lower()
-        if (needs_llm
+        if frame is not None and (
+                needs_llm
                 or any(k in q_lower for k in ("door", "open", "closed", "entrance", "exit"))
                 or any(k in q_lower.split() for k in (
                     "medicine", "medication", "drug", "pill", "tablet", "capsule",
-                    "dose", "dosage", "prescription", "label", "bottle", "packet",
+                    "dose", "dosage", "prescription",
                     "paracetamol", "ibuprofen", "aspirin",
                 ))):
             texts = ocr_reader.read(frame)
         else:
             texts = []
 
-        answer = brain.answer(question, frame, [], texts)
+        answer = brain.answer(question, frame, all_detections, texts)
         tts_engine.speak(answer, priority=True)
 
         return {
@@ -548,6 +873,13 @@ class PipelineRunner:
     # ── SCAN mode ─────────────────────────────────────────────────────────────
 
     def _process_scan(self, frame, w, h) -> dict | None:
+        try:
+            return self._process_scan_inner(frame, w, h)
+        except Exception as _exc:
+            logger.exception("[Pipeline] _process_scan EXCEPTION: %s", _exc)
+            return None
+
+    def _process_scan_inner(self, frame, w, h) -> dict | None:
         results = scanner.scan(frame)
         msg     = scanner.format_result(results)
         if msg:
@@ -590,9 +922,22 @@ class PipelineRunner:
         }
 
     def _send(self, data: dict):
-        """Broadcast a message to all WebSocket clients from a background thread."""
+        """
+        Broadcast a message to all WebSocket clients from a background thread.
+
+        Uses a futures-based call so errors are captured and logged rather than
+        silently dropped.  A 2-second timeout prevents a blocked event loop from
+        stalling the pipeline thread indefinitely.
+        """
         if self._loop and self._bcast:
-            asyncio.run_coroutine_threadsafe(self._bcast(data), self._loop)
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._bcast(data), self._loop)
+                try:
+                    future.result(timeout=2.0)
+                except Exception as exc:
+                    logger.error("[VisionTalk] broadcast failed: %s", exc)
+            except Exception as exc:
+                logger.error("[VisionTalk] _send scheduling error: %s", exc)
 
 
 pipeline = PipelineRunner()

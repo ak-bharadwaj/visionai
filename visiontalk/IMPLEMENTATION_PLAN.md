@@ -22,7 +22,7 @@ Build a hackathon-winning assistive navigation system that:
 │  │  IP Webcam App      │    │  Browser (Chrome) — PWA              │ │
 │  │  MJPEG stream ──────┼───►│  Modes: Obstacle / Finder / OCR      │ │
 │  │  http://IP:8080/    │WiFi│  Canvas bounding box overlay         │ │
-│  │  video              │    │  Guidance text banner + TTS audio     │ │
+│  │  video              │    │  Guidance text banner + TTS audio    │ │
 │  └─────────────────────┘    │  Voice commands (SpeechRecognition)  │ │
 │                             │  QR code to connect phone            │ │
 │                             └──────────┬─────────────────────────  ┘ │

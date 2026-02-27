@@ -1,298 +1,471 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="description" content="VisionTalk — offline AI spatial assistant for the visually impaired">
   <title>VisionTalk</title>
   <link rel="manifest" href="/static/manifest.json">
-  <meta name="theme-color" content="#050508">
+  <meta name="theme-color" content="#000000">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+
   <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
 
-  <!-- Ambient background orbs (CSS only) -->
-  <div class="ambient-orb orb-1"></div>
-  <div class="ambient-orb orb-2"></div>
-  <div class="ambient-orb orb-3"></div>
+  <!-- ─── CAMERA BACKGROUND ─────────────────────────────────────── -->
+  <div class="camera-wrap" id="camera-wrap">
+    <video id="camera-feed" class="camera-feed" autoplay playsinline muted aria-hidden="true"></video>
+    <canvas id="overlay-canvas" class="overlay-canvas" aria-hidden="true"></canvas>
 
-  <!-- ─── WELCOME OVERLAY ────────────────────────────────────── -->
-  <!-- Shown on first load. Hidden by JS once a mode is picked.  -->
-  <div id="welcome-overlay">
-    <div class="welcome-header">
-      <span class="brand-icon" style="font-size:56px" aria-hidden="true">👁</span>
-      <span class="brand-name" style="font-size:32px;font-weight:900;letter-spacing:1px">VisionTalk</span>
-      <p class="welcome-subtitle">Your AI eyes. Choose how to begin.</p>
+    <!-- Placeholder shown while camera is starting -->
+    <div id="camera-placeholder" class="camera-placeholder" aria-label="Camera starting">
+      <div class="placeholder-icon" aria-hidden="true">
+        <!-- Animated camera icon -->
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+      </div>
+      <p class="placeholder-text">Camera Starting…</p>
+      <!-- camera.js looks for this element -->
+      <p class="placeholder-hint">Allow camera access to begin</p>
     </div>
-    <div class="welcome-cards">
-      <button class="welcome-card" data-mode="NAVIGATE" aria-label="Navigate mode">
-        <span class="wc-icon" aria-hidden="true">🧭</span>
-        <span class="wc-label">NAVIGATE</span>
-        <span class="wc-desc">Warns you of danger. Answers questions about your path.</span>
-      </button>
-      <button class="welcome-card" data-mode="FIND" aria-label="Find mode">
-        <span class="wc-icon" aria-hidden="true">🔍</span>
-        <span class="wc-label">FIND</span>
-        <span class="wc-desc">Captures the scene and answers what you want to know.</span>
-      </button>
-      <button class="welcome-card" data-mode="OCR" aria-label="Read mode">
-        <span class="wc-icon" aria-hidden="true">📖</span>
-        <span class="wc-label">READ</span>
-        <span class="wc-desc">Reads any text in front of you aloud.</span>
-      </button>
-      <button class="welcome-card" data-mode="SCAN" aria-label="Scan mode">
-        <span class="wc-icon" aria-hidden="true">📷</span>
-        <span class="wc-label">SCAN</span>
-        <span class="wc-desc">Reads QR codes and barcodes instantly.</span>
-      </button>
-    </div>
-     <p class="welcome-voice-hint">🎙 Or say: "navigate", "find", "read", or "scan"</p>
   </div>
 
-  <!-- ─── HEADER ─────────────────────────────────────────────── -->
-  <header class="app-header">
-    <div class="header-brand">
-      <span class="brand-icon" aria-hidden="true">👁</span>
+  <!-- Stop-camera pill (shown by camera.js) -->
+  <button id="btn-stop-camera" class="btn-stop-camera hidden ripple-btn" aria-label="Stop camera">
+    Stop Camera
+  </button>
+
+  <!-- Camera status bar (shown by camera.js) -->
+  <div class="camera-status-bar hidden" id="camera-status-bar" aria-hidden="true">
+    <span class="cam-status-dot" id="cam-mode-indicator"></span>
+    <span class="cam-status-text" id="cam-status-text">AI Processing…</span>
+  </div>
+
+  <!-- Global scrim — shown behind panels -->
+  <div id="panel-scrim" class="panel-scrim hidden" aria-hidden="true"></div>
+
+  <!-- ─── TOP APP BAR ─────────────────────────────────────────────── -->
+  <header class="app-header" role="banner">
+    <div class="header-brand" aria-label="VisionTalk">
+      <span class="brand-icon" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        </svg>
+      </span>
       <span class="brand-name">VisionTalk</span>
     </div>
 
-    <div class="header-status">
-      <span id="ws-dot" class="ws-dot disconnected" title="WebSocket status"></span>
-      <span id="ws-label" class="ws-label">Connecting...</span>
-      <span id="mode-badge" class="mode-badge">NAVIGATE</span>
-      <span id="fps-display" class="fps-display">-- fps</span>
+    <!-- Current mode badge — read by app.js L403 -->
+    <div class="header-center">
+      <span id="mode-badge" class="mode-badge" aria-live="polite" aria-label="Current mode">NAVIGATE</span>
+    </div>
+
+    <div class="header-status" aria-label="Connection status">
+      <span id="ws-dot" class="ws-dot disconnected" aria-hidden="true"></span>
+      <span id="ws-label" class="ws-label">Connecting</span>
+      <span id="fps-display" class="fps-display" aria-label="Frame rate">-- fps</span>
     </div>
 
     <div class="header-actions">
-      <button id="btn-mic" class="mic-btn-header" aria-label="Hold to speak a voice command">
-        <span class="mic-icon">🎙</span>
+      <!-- PTT mic (hidden by default — backwards compat with voice.js) -->
+      <button id="btn-mic" class="mic-btn-header hidden ripple-btn" aria-label="Hold to speak">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 3.87-3.66 6.8-7.66 7h-.5C5.75 19 2.59 16.07 2.09 12.2L2 12H4c.49 3.54 3.45 6 7 6s6.51-2.46 7-6h2l-.09.2z"/>
+        </svg>
       </button>
-      <button id="btn-settings" class="icon-btn" aria-label="Settings" title="Camera settings">⚙</button>
+      <button id="btn-settings" class="m3-icon-btn ripple-btn" aria-label="Settings">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.02 7.02 0 00-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84c-.24 0-.44.17-.47.41l-.36 2.54a7.1 7.1 0 00-1.62.94l-2.39-.96a.48.48 0 00-.59.22L2.74 8.87a.48.48 0 00.12.61l2.03 1.58a7 7 0 00-.07.94c0 .32.02.63.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54a7.1 7.1 0 001.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.03-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+        </svg>
+      </button>
     </div>
   </header>
 
-  <!-- ─── SETTINGS PANEL ────────────────────────────────────── -->
-  <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-label="Camera setup">
-    <div class="settings-inner">
-      <div class="settings-titlebar">
-        <h3 class="settings-title">📷 Camera Setup</h3>
-        <button id="btn-settings-close" class="settings-close" aria-label="Close settings">✕</button>
+  <!-- ─── GUIDANCE BANNERS ──────────────────────────────────────── -->
+  <div class="guidance-container" role="region" aria-label="Guidance">
+    <div id="guidance-banner" class="guidance-banner sev0" role="status" aria-live="polite" aria-atomic="true">
+      <span id="guidance-sev-icon" class="guidance-sev-icon" aria-hidden="true"></span>
+      <span id="guidance-text" class="guidance-text">Initializing VisionTalk…</span>
+    </div>
+
+    <div id="find-banner" class="find-banner hidden" role="status" aria-live="polite">
+      <span class="find-icon" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+        </svg>
+      </span>
+      <span id="find-label" class="find-label">Searching…</span>
+    </div>
+
+    <div id="find-capture-banner" class="find-banner hidden" role="status" aria-live="assertive">
+      <span class="find-icon" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        </svg>
+      </span>
+      <span id="find-capture-label" class="find-label">Ready to capture</span>
+      <button id="btn-find-capture-yes" class="find-yes-btn ripple-btn" aria-label="Yes, capture now">Yes</button>
+    </div>
+
+    <!-- Navigation destination banner — shown when NAVIGATE mode is ACTIVE with a set destination -->
+    <div id="nav-destination-banner" class="hidden" aria-live="polite" role="status">
+      <span class="nav-dest-icon" aria-hidden="true">&#x1F9ED;</span>
+      <span id="nav-dest-text"></span>
+    </div>
+  </div>
+
+  <!-- ─── SOS OVERLAY ──────────────────────────────────────────── -->
+  <div id="sos-overlay" class="sos-overlay hidden" role="alertdialog" aria-modal="true" aria-label="Emergency SOS">
+    <div class="sos-pulse-ring" aria-hidden="true"></div>
+    <span class="sos-icon" aria-hidden="true">🆘</span>
+    <p class="sos-text">EMERGENCY</p>
+    <button class="sos-dismiss-btn ripple-btn" aria-label="Dismiss SOS alert"
+      onclick="document.getElementById('sos-overlay').classList.add('hidden')">Dismiss</button>
+  </div>
+
+  <!-- ─── WELCOME OVERLAY ──────────────────────────────────────── -->
+  <div id="welcome-overlay" role="dialog" aria-modal="true" aria-label="Select a mode to begin">
+    <div class="welcome-header">
+      <div class="welcome-logo" aria-hidden="true">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="white">
+          <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        </svg>
       </div>
-      <p class="settings-hint">Uses your device's built-in camera via the browser.</p>
-      <div class="ip-row">
-        <select id="camera-facing" class="ip-input" style="cursor:pointer">
-          <option value="environment">Back camera (recommended)</option>
+      <h1 class="welcome-hero">VisionTalk</h1>
+      <p class="welcome-subtitle">Your AI spatial assistant</p>
+    </div>
+    <div class="welcome-cards" role="group" aria-label="Select mode">
+      <button class="welcome-card mode-btn ripple-btn" data-mode="NAVIGATE"
+        aria-label="Navigate mode — spatial hazard detection">
+        <span class="wc-icon" aria-hidden="true">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+          </svg>
+        </span>
+        <span class="wc-label">Navigate</span>
+        <span class="wc-desc">Detect hazards</span>
+      </button>
+      <button class="welcome-card mode-btn ripple-btn" data-mode="FIND"
+        aria-label="Find mode — locate objects around you">
+        <span class="wc-icon" aria-hidden="true">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+          </svg>
+        </span>
+        <span class="wc-label">Find</span>
+        <span class="wc-desc">Locate objects</span>
+      </button>
+      <!-- BUG FIX: was data-mode="OCR" — app.js maps OCR→READ, but pickMode() on welcome
+           cards also runs through the mode-btn click loop, sending set_mode:OCR to backend.
+           Fix: use READ directly so both paths agree. -->
+      <button class="welcome-card mode-btn ripple-btn" data-mode="READ"
+        aria-label="Read mode — read text around you">
+        <span class="wc-icon" aria-hidden="true">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 14H8v-2h8v2zm0-4H8v-2h8v2zm0-4H8V6h8v2z"/>
+          </svg>
+        </span>
+        <span class="wc-label">Read</span>
+        <span class="wc-desc">Read text aloud</span>
+      </button>
+      <button class="welcome-card mode-btn ripple-btn" data-mode="SCAN"
+        aria-label="Scan mode — scan QR codes and barcodes">
+        <span class="wc-icon" aria-hidden="true">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M9.5 6.5v3h-3v-3h3M11 5H5v6h6V5zm-1.5 9.5v3h-3v-3h3M11 13H5v6h6v-6zm6.5-6.5v3h-3v-3h3M19 5h-6v6h6V5zm-6 8h1.5v1.5H13V13zm1.5 1.5H16V16h-1.5v-1.5zM16 13h1.5v1.5H16V13zm-3 3h1.5v1.5H13V16zm1.5 1.5H16V19h-1.5v-1.5zM16 16h1.5v1.5H16V16zm1.5-1.5H19V16h-1.5v-1.5zm0 3H19V19h-1.5v-1.5zM22 7h-2V4h-3V2h5v5zm0 15v-5h-2v3h-3v2h5zM2 22h5v-2H4v-3H2v5zM2 2v5h2V4h3V2H2z"/>
+          </svg>
+        </span>
+        <span class="wc-label">Scan</span>
+        <span class="wc-desc">QR &amp; barcodes</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ─── PANELS ─────────────────────────────────────────────────── -->
+
+  <!-- Settings -->
+  <div id="settings-panel" class="m3-panel hidden" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="panel-header">
+      <h2 class="panel-title">Camera Setup</h2>
+      <button id="btn-settings-close" class="m3-icon-btn ripple-btn" aria-label="Close settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+        </svg>
+      </button>
+    </div>
+    <div class="panel-content">
+      <div class="settings-row">
+        <label for="camera-facing" class="settings-label">Camera</label>
+        <select id="camera-facing" class="m3-input" aria-label="Camera facing direction">
+          <option value="environment">Back camera</option>
           <option value="user">Front camera</option>
         </select>
-        <button id="btn-apply-camera" class="apply-btn">Apply</button>
+        <button id="btn-apply-camera" class="m3-filled-btn ripple-btn" aria-label="Apply camera selection">Apply</button>
       </div>
       <div class="qr-section">
-        <p class="settings-hint">Scan to open VisionTalk on your phone:</p>
-        <img id="qr-img" src="/qr" alt="QR code to open VisionTalk on phone" class="qr-img" loading="lazy">
+        <p class="qr-hint">Scan to open on phone:</p>
+        <img id="qr-img" src="/qr" alt="QR code to open VisionTalk on a phone" class="qr-img">
       </div>
     </div>
   </div>
 
-  <!-- ─── MAIN ──────────────────────────────────────────────── -->
-  <main class="app-main">
+  <!-- Conversation panel (bottom sheet) -->
+  <div id="conversation-panel" class="m3-panel bottom-sheet hidden"
+    role="region" aria-label="Conversation history" aria-live="polite">
+    <div class="panel-drag-handle" aria-hidden="true"></div>
+    <div class="panel-header">
+      <span class="panel-title">Conversation</span>
+      <button id="btn-clear-convo" class="panel-text-btn ripple-btn" aria-label="Clear conversation history">Clear</button>
+    </div>
+    <div id="convo-messages" class="convo-messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+  </div>
 
-    <!-- Camera: full-width hero -->
-    <div class="camera-wrap" id="camera-wrap">
-      <video id="camera-feed" class="camera-feed" autoplay playsinline muted></video>
-      <canvas id="overlay-canvas" class="overlay-canvas" aria-hidden="true"></canvas>
-      <div id="camera-placeholder" class="camera-placeholder">
-        <div class="placeholder-icon" aria-hidden="true">📷</div>
-        <p class="placeholder-text">Camera not started</p>
-        <p class="placeholder-hint">Pick a mode to begin</p>
-      </div>
-      <!-- Stop Camera button (visible while camera is active) -->
-      <button id="btn-stop-camera" class="btn-stop-camera hidden" aria-label="Stop camera">
-        ⏹ Stop Camera
+  <!-- Detective / live-data side sheet -->
+  <div id="detective-panel" class="m3-panel side-sheet hidden"
+    role="region" aria-label="Live detection data">
+    <div class="panel-header">
+      <span class="panel-title">Live Data</span>
+      <span id="det-fps" class="fps-display det-fps-label" aria-live="polite">FPS: --</span>
+    </div>
+    <div id="detective-table" aria-live="polite" aria-relevant="additions text"></div>
+  </div>
+
+  <!-- ─── BOTTOM CONTROLS ─────────────────────────────────────────── -->
+  <div class="bottom-controls" role="main">
+
+    <!-- Advanced tools tray -->
+    <div class="advanced-tools-tray" role="toolbar" aria-label="Advanced tools">
+      <button id="btn-overlay" class="tool-chip ripple-btn" aria-label="Toggle bounding box overlay" aria-pressed="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        </svg>
+        Overlay
       </button>
-      <!-- Status bar overlaid on camera bottom -->
-      <div class="camera-status-bar">
-        <span class="cam-status-dot" id="cam-mode-indicator"></span>
-        <span class="cam-status-text" id="cam-status-text">AI Processing...</span>
-      </div>
-    </div>
-
-    <!-- Guidance Banner -->
-    <div id="guidance-banner" class="guidance-banner sev0" role="status" aria-live="polite" aria-atomic="true">
-      <span id="guidance-sev-icon" class="guidance-sev-icon" aria-hidden="true"></span>
-      <span id="guidance-text" class="guidance-text">Initializing VisionTalk...</span>
-    </div>
-
-    <!-- Find Mode Banner (shown when actively searching for an object) -->
-    <div id="find-banner" class="find-banner hidden" role="status" aria-live="polite">
-      <span class="find-icon" aria-hidden="true">🔍</span>
-      <span id="find-label" class="find-label">Searching...</span>
-      <button class="find-cancel-btn" aria-label="Cancel search"
-              onclick="window.sendCommand?.({type:'command',action:'find_cancel'});this.closest('#find-banner').classList.add('hidden');window.showToast?.('Search cancelled')">
-        ✕
+      <button id="btn-snapshot" class="tool-chip ripple-btn" aria-label="Save scene snapshot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/>
+        </svg>
+        Remember
+      </button>
+      <button id="btn-diff" class="tool-chip ripple-btn" aria-label="Compare with saved snapshot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 6v3l4-4-4-4v3c-4.42 0-8 3.58-8 8 0 1.57.46 3.03 1.24 4.26L6.7 14.8A5.87 5.87 0 016 12c0-3.31 2.69-6 6-6zm6.76 1.74L17.3 9.2c.44.84.7 1.79.7 2.8 0 3.31-2.69 6-6 6v-3l-4 4 4 4v-3c4.42 0 8-3.58 8-8 0-1.57-.46-3.03-1.24-4.26z"/>
+        </svg>
+        Diff
+      </button>
+      <button id="btn-demo-mode" class="tool-chip ripple-btn" aria-label="Toggle demo presentation mode" aria-pressed="false">
+        <span class="demo-btn-label">Demo</span>
+      </button>
+      <button id="btn-detective" class="tool-chip ripple-btn" aria-label="Toggle live data panel" aria-pressed="false">
+        <span class="demo-btn-label">Data</span>
       </button>
     </div>
 
-    <!-- FIND Capture Flow Banner -->
-    <div id="find-capture-banner" class="find-banner hidden" role="status" aria-live="assertive">
-      <span class="find-icon" aria-hidden="true">📸</span>
-      <span id="find-capture-label" class="find-label">Ready to capture</span>
-      <button id="btn-find-capture-yes" class="apply-btn" style="margin-left:auto;padding:6px 14px;font-size:13px">Yes</button>
-    </div>
+    <!-- Shutter / action area -->
+    <div class="action-area">
 
-    <!-- SOS Overlay (activated by voice "help" / "emergency") -->
-    <div id="sos-overlay" class="sos-overlay hidden" role="alert" aria-live="assertive">
-      <div class="sos-inner">
-        <div class="sos-pulse-ring"></div>
-        <span class="sos-icon" aria-hidden="true">🆘</span>
-        <p class="sos-text">SOS ACTIVATED</p>
-        <p class="sos-subtext">Calling for help...</p>
-        <button class="sos-dismiss-btn" aria-label="Dismiss SOS"
-                onclick="document.getElementById('sos-overlay').classList.add('hidden')">
-          Dismiss
+      <!-- Big voice shutter button -->
+      <div class="voice-activate-section">
+        <button id="btn-voice-activate" class="voice-fab ripple-btn"
+          aria-label="Tap to speak a voice command"
+          aria-pressed="false">
+          <div class="voice-pulse-ring" aria-hidden="true"></div>
+          <!-- Mic icon inside shutter -->
+          <svg class="voice-fab-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 3.87-3.66 6.8-7.66 7h-.5C5.75 19 2.59 16.07 2.09 12.2L2 12H4c.49 3.54 3.45 6 7 6s6.51-2.46 7-6h2l-.09.2z"/>
+          </svg>
+        </button>
+        <!-- BUG FIX: voice.js L378 looks for .voice-activate-label as sibling of #btn-voice-activate -->
+        <span class="voice-activate-label" aria-live="polite">Tap to speak</span>
+      </div>
+
+      <!-- ASK row (shown only in ASK mode by app.js) -->
+      <div id="ask-row" class="text-input-row hidden" role="search" aria-label="Ask a question">
+        <input id="ask-input" class="search-pill" type="text"
+          placeholder="Type a question…"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="Question input">
+        <button id="btn-send" class="send-fab ripple-btn" aria-label="Send question">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
         </button>
       </div>
-    </div>
 
-    <!-- Content Grid: 2 columns on desktop -->
-    <div class="content-grid">
+      <!-- FIND row (shown only in FIND mode by app.js) -->
+      <div id="find-row" class="text-input-row hidden" role="search" aria-label="Find and ask about scene">
+        <button id="btn-find-capture" class="send-fab cam-fab ripple-btn" aria-label="Capture scene for analysis">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/>
+          </svg>
+        </button>
+        <input id="find-question-input" class="search-pill" type="text"
+          placeholder="Ask about scene…"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="Question about captured scene">
+        <button id="btn-find-send" class="send-fab ripple-btn" aria-label="Send question about scene">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
+        </button>
+      </div>
 
-      <!-- LEFT: Mode + Controls -->
-      <div class="controls-col">
+    </div> <!-- /action-area -->
 
-        <p class="section-label">AI MODE</p>
-        <section class="mode-controls" aria-label="Mode selection">
-          <button id="btn-navigate" class="mode-btn active" data-mode="NAVIGATE"
-                  aria-pressed="true" title="Continuous spatial narration">
-            <span class="mode-icon" aria-hidden="true">🧭</span>
-            <span class="mode-label">NAVIGATE</span>
-            <span class="mode-desc">Spatial narrator</span>
-          </button>
-          <button id="btn-ask" class="mode-btn" data-mode="ASK"
-                  aria-pressed="false" title="Ask questions about what the camera sees">
-            <span class="mode-icon" aria-hidden="true">🧠</span>
-            <span class="mode-label">ASK</span>
-            <span class="mode-desc">Voice &amp; text Q&amp;A</span>
-          </button>
-          <button id="btn-find" class="mode-btn" data-mode="FIND"
-                  aria-pressed="false" title="Capture scene and ask questions about it">
-            <span class="mode-icon" aria-hidden="true">🔍</span>
-            <span class="mode-label">FIND</span>
-            <span class="mode-desc">Capture &amp; ask</span>
-          </button>
-          <button id="btn-read" class="mode-btn" data-mode="READ"
-                  aria-pressed="false" title="Read text in the camera frame via OCR">
-            <span class="mode-icon" aria-hidden="true">📖</span>
-            <span class="mode-label">READ</span>
-            <span class="mode-desc">OCR text reader</span>
-          </button>
-          <button id="btn-scan" class="mode-btn" data-mode="SCAN"
-                  aria-pressed="false" title="Scan QR codes and barcodes">
-            <span class="mode-icon" aria-hidden="true">📷</span>
-            <span class="mode-label">SCAN</span>
-            <span class="mode-desc">QR &amp; barcode</span>
-          </button>
-        </section>
+    <!-- Mode selector (Google Lens style) -->
+    <nav class="mode-slider-wrap" aria-label="Mode selection">
+      <div class="mode-slider mode-controls">
+        <button id="btn-navigate" class="mode-btn mode-tab active" data-mode="NAVIGATE"
+          aria-pressed="true" aria-label="Navigate mode">Navigate</button>
+        <button id="btn-ask" class="mode-btn mode-tab" data-mode="ASK"
+          aria-pressed="false" aria-label="Ask mode">Ask</button>
+        <button id="btn-find" class="mode-btn mode-tab" data-mode="FIND"
+          aria-pressed="false" aria-label="Find mode">Find</button>
+        <button id="btn-read" class="mode-btn mode-tab" data-mode="READ"
+          aria-pressed="false" aria-label="Read mode">Read</button>
+        <button id="btn-scan" class="mode-btn mode-tab" data-mode="SCAN"
+          aria-pressed="false" aria-label="Scan mode">Scan</button>
+      </div>
+    </nav>
 
-        <!-- ASK Row — text input, only shown in ASK mode -->
-        <div id="ask-row" class="ask-row hidden" aria-label="Type or hold mic to ask a question">
-          <input id="ask-input" class="ask-input" type="text"
-                 placeholder="Type your question here..."
-                 autocomplete="off" autocorrect="off" autocapitalize="sentences">
-          <button id="btn-send" class="send-btn" aria-label="Send question" title="Send question">
-            <span aria-hidden="true">➤</span>
-          </button>
-        </div>
+  </div> <!-- /bottom-controls -->
 
-        <!-- FIND Row — capture button + question input, only shown in FIND mode -->
-        <div id="find-row" class="ask-row hidden" aria-label="FIND mode capture and question">
-          <button id="btn-find-capture" class="send-btn" aria-label="Capture scene" title="Capture scene" style="padding:0 16px;font-size:18px">📸</button>
-          <input id="find-question-input" class="ask-input" type="text"
-                 placeholder="Ask about what you captured..."
-                 autocomplete="off" autocorrect="off" autocapitalize="sentences">
-          <button id="btn-find-send" class="send-btn" aria-label="Ask about capture" title="Ask about capture">
-            <span aria-hidden="true">➤</span>
-          </button>
-        </div>
-
-        <!-- Voice Activation Button -->
-        <section class="voice-activate-section" aria-label="Voice activation">
-          <button id="btn-voice-activate" class="voice-activate-btn" aria-label="Tap to activate voice commands" aria-pressed="false">
-            <div class="voice-pulse-ring"></div>
-            <span class="voice-activate-icon" aria-hidden="true">🎙</span>
-          </button>
-          <p class="voice-activate-label">Tap to speak a command</p>
-        </section>
-
-        <p class="section-label">TOOLS</p>
-        <section class="secondary-controls" aria-label="Extra tools">
-          <button id="btn-overlay" class="secondary-btn" title="Toggle bounding box overlay">
-            <span aria-hidden="true">👁</span>
-            <span class="secondary-label">Overlay</span>
-          </button>
-          <button id="btn-snapshot" class="secondary-btn" title="Save a scene snapshot to compare later">
-            <span aria-hidden="true">📸</span>
-            <span class="secondary-label">Remember</span>
-          </button>
-          <button id="btn-diff" class="secondary-btn" title="Compare current scene with saved snapshot">
-            <span aria-hidden="true">🔄</span>
-            <span class="secondary-label">What Changed?</span>
-          </button>
-        </section>
-
-        <p class="section-label">DEMO</p>
-        <section class="demo-controls" aria-label="Demo controls for judges">
-          <button id="btn-demo-mode" class="demo-btn" title="Force big text + overlay + data panel for live demos">
-            <span class="demo-btn-icon" aria-hidden="true">🎬</span>
-            <span class="demo-btn-label">Demo Mode</span>
-            <span class="demo-btn-hint">Judges: forces overlay + big text</span>
-          </button>
-          <button id="btn-detective" class="demo-btn" title="Show live AI detection data">
-            <span class="demo-btn-icon" aria-hidden="true">🔬</span>
-            <span class="demo-btn-label">Show Data</span>
-            <span class="demo-btn-hint">Live AI detection proof</span>
-          </button>
-        </section>
-
-      </div><!-- end controls-col -->
-
-      <!-- RIGHT: Live Data Panels -->
-      <div class="data-col">
-
-        <!-- Detective Panel -->
-        <div id="detective-panel" class="detective-panel hidden" aria-live="polite">
-          <div class="detective-header">
-            <span>🔬 Live AI Detection Data</span>
-            <span id="det-fps" class="det-fps">FPS: --</span>
-          </div>
-          <div id="detective-table">
-            <p class="detective-empty">No detections yet...</p>
-          </div>
-        </div>
-
-        <!-- Conversation Panel -->
-        <div id="conversation-panel" class="conversation-panel hidden">
-          <div class="convo-header">
-            <span>💬 AI Conversation</span>
-            <button id="btn-clear-convo" class="convo-clear" aria-label="Clear conversation history">✕ Clear</button>
-          </div>
-          <div id="convo-messages" class="convo-messages" role="log" aria-live="polite" aria-label="Conversation messages"></div>
-        </div>
-
-      </div><!-- end data-col -->
-
-    </div><!-- end content-grid -->
-
-  </main>
-
-  <!-- Toast -->
-  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <!-- Snackbar / Toast -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Scripts -->
+  <!-- WS interceptor: must load before app.js to track nav_state from narration payloads -->
+  <script>
+    window._navState = 'IDLE';
+    window._navDestination = '';
+    (function patchWebSocket() {
+      const _OrigWS = window.WebSocket;
+
+      // ── Nav destination banner helpers ────────────────────────────
+      const _NAV_SEV_CLASSES = ['nav-sev1', 'nav-sev2', 'nav-sev3'];
+      function _updateNavUI(d) {
+        // Only act on narration messages
+        if (d.type !== 'narration') return;
+
+        // Track state + destination
+        if (d.nav_state)      window._navState       = d.nav_state;
+        if (d.nav_destination !== undefined) window._navDestination = d.nav_destination || '';
+
+        const isNavigate = (d.mode === 'NAVIGATE');
+        const isActive   = (window._navState === 'ACTIVE');
+        const dest       = window._navDestination;
+
+        // Update destination banner
+        const banner  = document.getElementById('nav-destination-banner');
+        const destTxt = document.getElementById('nav-dest-text');
+        if (banner && destTxt) {
+          if (isNavigate && isActive && dest) {
+            destTxt.textContent = 'Navigating to: ' + dest;
+            banner.classList.remove('hidden');
+          } else {
+            banner.classList.add('hidden');
+          }
+        }
+
+        // Update ambient severity glow (body class)
+        _NAV_SEV_CLASSES.forEach(c => document.body.classList.remove(c));
+        if (isNavigate && typeof d.severity === 'number') {
+          // severity 1 = HIGH (red), 2 = MEDIUM (amber), 3 = LOW (green)
+          const sev = Math.min(3, Math.max(1, Math.round(d.severity)));
+          document.body.classList.add('nav-sev' + sev);
+        }
+      }
+
+      function PatchedWS(url, protocols) {
+        const ws = protocols ? new _OrigWS(url, protocols) : new _OrigWS(url);
+        const _origDescriptor = Object.getOwnPropertyDescriptor(_OrigWS.prototype, 'onmessage');
+        let _userHandler = null;
+        Object.defineProperty(ws, 'onmessage', {
+          get() { return _userHandler; },
+          set(fn) {
+            _userHandler = fn;
+            _origDescriptor.set.call(ws, function(evt) {
+              // Intercept: extract nav_state/severity/destination before forwarding
+              try {
+                const d = JSON.parse(evt.data);
+                _updateNavUI(d);
+              } catch (_) {}
+              if (_userHandler) _userHandler.call(this, evt);
+            });
+          },
+          configurable: true,
+        });
+        return ws;
+      }
+      PatchedWS.prototype = _OrigWS.prototype;
+      PatchedWS.CONNECTING = _OrigWS.CONNECTING;
+      PatchedWS.OPEN       = _OrigWS.OPEN;
+      PatchedWS.CLOSING    = _OrigWS.CLOSING;
+      PatchedWS.CLOSED     = _OrigWS.CLOSED;
+      window.WebSocket = PatchedWS;
+    })();
+  </script>
   <script src="/static/camera.js"></script>
   <script src="/static/overlay.js"></script>
   <script src="/static/audio.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/voice.js"></script>
-  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');</script>
+
+  <script>
+    // ── Ripple effect ─────────────────────────────────────────────
+    // Applied on DOMContentLoaded; also exposed as addRipple() for
+    // dynamically-added elements (conversation bubbles, etc.)
+    function addRipple(btn) {
+      btn.addEventListener('click', function (e) {
+        const ripple = document.createElement('span');
+        ripple.classList.add('m3-ripple');
+        this.appendChild(ripple);
+        const maxDim = Math.max(this.clientWidth, this.clientHeight);
+        ripple.style.width = ripple.style.height = maxDim + 'px';
+        const rect = this.getBoundingClientRect();
+        const x = e.clientX ? e.clientX - rect.left : rect.width / 2;
+        const y = e.clientY ? e.clientY - rect.top : rect.height / 2;
+        ripple.style.left = x - maxDim / 2 + 'px';
+        ripple.style.top  = y - maxDim / 2 + 'px';
+        setTimeout(() => ripple.remove(), 600);
+      });
+    }
+    document.querySelectorAll('.ripple-btn').forEach(addRipple);
+    window.addRipple = addRipple;
+
+    // ── Scrim click closes active panels ─────────────────────────
+    document.getElementById('panel-scrim').addEventListener('click', () => {
+      document.getElementById('settings-panel')?.classList.add('hidden');
+      document.getElementById('panel-scrim')?.classList.add('hidden');
+    });
+
+    // ── Mode slider: center active tab on load ────────────────────
+    (function centerActiveTab() {
+      const wrap = document.querySelector('.mode-slider-wrap');
+      const active = document.querySelector('.mode-tab.active');
+      if (!wrap || !active) return;
+      const wrapW  = wrap.offsetWidth;
+      const tabL   = active.offsetLeft;
+      const tabW   = active.offsetWidth;
+      wrap.scrollLeft = tabL - (wrapW / 2) + (tabW / 2);
+    })();
+  </script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');</script>
 </body>
+
 </html>

@@ -10,6 +10,10 @@ Changes from original:
   - metres_from_score() / feet_from_score() are now static methods for use
     by tracker and risk_engine without importing pipeline state.
   - detect_stair_drop() unchanged — already well-tuned.
+  - Added depth_jump_reject(): rejects a new measurement that differs from
+    the previous one by more than DEPTH_JUMP_REJECT_M metres (in converted
+    metres space).  Prevents monocular depth flicker from entering velocity
+    estimation as real motion signal.
 """
 
 import threading
@@ -21,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Variance threshold above which depth is considered unreliable for this region.
 DEPTH_VARIANCE_THRESHOLD = 0.04
+
+# Maximum permitted single-frame depth change (metres) before a measurement is
+# discarded as a flicker artefact.  Real objects rarely jump >0.8 m per frame.
+# Only applied via depth_jump_reject(); callers that do not use it are unaffected.
+DEPTH_JUMP_REJECT_M = 0.80
 
 
 class DepthEstimator:
@@ -117,6 +126,30 @@ class DepthEstimator:
         Stable = variance <= DEPTH_VARIANCE_THRESHOLD.
         """
         return self.get_region_variance(depth_map, x1, y1, x2, y2) <= DEPTH_VARIANCE_THRESHOLD
+
+    @staticmethod
+    def depth_jump_reject(prev_dist_m: float, new_dist_m: float) -> bool:
+        """
+        Return True if the new distance measurement is a likely flicker artefact
+        and should be discarded.
+
+        Monocular depth (MiDaS) occasionally produces single-frame jumps that
+        are physically implausible — a real object does not teleport 1 m between
+        frames at typical camera frame rates.  This guard prevents such spikes
+        from entering the EMA smoother and generating false velocity signals.
+
+        Args:
+            prev_dist_m : previously accepted smoothed distance in metres.
+            new_dist_m  : raw new measurement candidate in metres.
+
+        Returns:
+            True  → discard new_dist_m (jump too large).
+            False → accept new_dist_m (within plausible range).
+        """
+        if prev_dist_m <= 0.0:
+            # No prior measurement — always accept the first reading.
+            return False
+        return abs(new_dist_m - prev_dist_m) > DEPTH_JUMP_REJECT_M
 
     # ── Distance conversion ───────────────────────────────────────────────────
 

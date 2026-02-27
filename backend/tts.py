@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 class TTSEngine:
     DEDUP_WINDOW    = 8.0   # seconds — how long to suppress identical phrases
-    NAV_RATE_LIMIT  = 5.0   # seconds — min gap between non-priority messages
+    NAV_RATE_LIMIT  = 2.0   # seconds — min gap between non-priority messages
 
     def __init__(self):
         self._q:              queue.Queue      = queue.Queue(maxsize=5)
@@ -33,12 +33,16 @@ class TTSEngine:
             return
         now = time.time()
 
-        # Dedup check — identical phrase spoken too recently
-        if text in self._last and now - self._last[text] < self.DEDUP_WINDOW:
+        # Dedup check — identical phrase spoken too recently.
+        # Priority=True (brain answers, urgent alerts) always bypasses dedup so
+        # the user never silently misses a repeated answer within the window.
+        if not priority and text in self._last and now - self._last[text] < self.DEDUP_WINDOW:
+            logger.debug("TTS dedup: dropped %r (%.1fs ago)", text[:60], now - self._last[text])
             return
 
         # Rate-limit non-priority (navigation) messages
         if not priority and (now - self._last_nav_time) < self.NAV_RATE_LIMIT:
+            logger.debug("TTS nav rate-limit: dropped %r (%.1fs since last nav)", text[:60], now - self._last_nav_time)
             return
 
         if priority:
@@ -51,23 +55,33 @@ class TTSEngine:
 
         try:
             self._q.put_nowait(text)
+            logger.debug("TTS queued (%s): %r", "priority" if priority else "normal", text[:80])
         except queue.Full:
-            pass  # drop if queue full — never block the pipeline
+            logger.warning("TTS queue full — dropped: %r", text[:60])  # drop if queue full — never block the pipeline
 
         self._last[text] = now
 
     def _worker(self):
         speak_count = 0
         while True:
-            text = self._q.get()
+            try:
+                text = self._q.get(timeout=30.0)
+            except queue.Empty:
+                # No message in 30s — keep worker alive, check queue again
+                continue
             if self._broadcast and self._loop:
                 try:
-                    asyncio.run_coroutine_threadsafe(
+                    future = asyncio.run_coroutine_threadsafe(
                         self._broadcast({"type": "speak", "text": text}),
                         self._loop
                     )
+                    try:
+                        future.result(timeout=2.0)
+                        logger.debug("TTS spoken: %r", text[:60])
+                    except Exception as e:
+                        logger.error("TTS broadcast failed: %s", e)
                 except Exception as e:
-                    logger.error(f"TTS relay error: {e}")
+                    logger.error("TTS relay scheduling error: %s", e)
             speak_count += 1
             # Purge dedup dict every 200 speaks to prevent unbounded memory growth
             if speak_count % 200 == 0:

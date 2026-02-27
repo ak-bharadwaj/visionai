@@ -42,29 +42,37 @@ class WorldDetector:
         self._loaded = False
 
     def load(self):
-        """Download and cache yolov8s-worldv2.pt on first run (~50 MB)."""
+        """Load YOLOWorld if available, otherwise silently disable extra detection."""
         if self._loaded:
             return
+        from ultralytics import YOLO as _YOLO
+        # Try YOLOWorld class first (ultralytics >= 8.1.2)
+        loaded = False
         try:
-            # ultralytics < 8.1.2 has no YOLOWorld class — use YOLO directly.
-            # YOLOWorld models expose set_classes(); fallback to plain YOLO if absent.
-            from ultralytics import YOLO as _YOLO
-            try:
-                from ultralytics import YOLOWorld as _YW
-                self._model = _YW("yolov8s-worldv2.pt")
-            except ImportError:
-                self._model = _YOLO("yolov8s-worldv2.pt")
-
+            from ultralytics import YOLOWorld as _YW
+            self._model = _YW("yolov8s-worldv2.pt")
             if hasattr(self._model, "set_classes"):
                 self._model.set_classes(EXTRA_CLASSES)
+            loaded = True
+        except Exception:
+            pass
+
+        # Try loading worldv2 weights with plain YOLO (architecture may still work)
+        if not loaded:
+            try:
+                self._model = _YOLO("yolov8s-worldv2.pt")
+                if hasattr(self._model, "set_classes"):
+                    self._model.set_classes(EXTRA_CLASSES)
+                loaded = True
+            except Exception:
+                pass
+
+        if loaded:
             self._loaded = True
             logger.info("👁 [VisionTalk] YOLOWorld ready — %d extra classes.", len(EXTRA_CLASSES))
-        except Exception as exc:
-            logger.warning(
-                "👁 [VisionTalk] YOLOWorld not available (%s). "
-                "Extra detection disabled — run: pip install ultralytics", exc
-            )
-            self._loaded = False
+        else:
+            # Extra detection disabled — primary YOLO still handles COCO-80
+            logger.info("👁 [VisionTalk] YOLOWorld unavailable on this ultralytics version — extra detection disabled.")
 
     def detect(self, frame: np.ndarray, conf: float = 0.35) -> list[dict]:
         """

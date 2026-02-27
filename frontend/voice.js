@@ -10,17 +10,35 @@
 //  - Mode commands ('navigate', 'read', 'ask', 'find') switch mode + show toast
 //  - In FIND mode: capture/yes/ok triggers capture flow; other utterances → find_question
 
+// ── Debounce helper ──────────────────────────────────────────────────────────
+// Prevents duplicate commands when browser fires recognition result twice quickly.
+function _debounce(fn, wait) {
+  let timer = null;
+  return function (...args) {
+    if (timer !== null) return; // drop duplicate within window
+    fn.apply(this, args);
+    timer = setTimeout(() => { timer = null; }, wait);
+  };
+}
+
 // ── Shared command router ────────────────────────────────────────────────────
 // Routes a transcript to the correct feature action. Returns true if a command
 // was matched, false if it was treated as a free-form question.
-function routeVoiceCommand(transcript) {
+function _routeVoiceCommandRaw(transcript) {
   const lower = transcript.toLowerCase();
   window.showToast?.(`Heard: "${transcript}"`);
 
   // ── FIND mode capture flow — intercept BEFORE all other handlers ──────────
   if (window.currentMode === 'FIND') {
     // "capture" / "find more" → start capture (ask for confirmation)
-    if (lower === 'capture' || lower === 'find more' || lower === 'take photo' || lower === 'scan') {
+    if (lower === 'capture' || lower === 'find more' || lower === 'take photo' || lower === 'scan' ||
+        lower === 'take a photo' || lower === 'take a picture' || lower === 'take picture' ||
+        lower === 'photograph' || lower === 'photo' || lower === 'picture' ||
+        lower === 'snap' || lower === 'snap it' || lower === 'shoot' ||
+        lower === 'look at this' || lower === 'what is this' || lower === 'what\'s this' ||
+        lower === 'analyze this' || lower === 'analyse this' || lower === 'analyze' ||
+        lower === 'analyse' || lower === 'check this' || lower === 'show me' ||
+        lower === 'image' || lower === 'get image' || lower === 'capture this') {
       window.sendCommand?.({ type: 'command', action: 'find_start_capture' });
       window.showToast?.('Starting capture...');
       return true;
@@ -88,6 +106,22 @@ function routeVoiceCommand(transcript) {
     window.showToast?.('NAVIGATE — spatial narration active');
     return true;
   }
+
+  // Navigate-to destination — "navigate to the kitchen", "go to exit", "take me to door"
+  const navToMatch = lower.match(
+    /^(?:navigate to|go to|take me to|head to|walk to|i want to go to|destination)\s+(?:the\s+|a\s+)?(.+)$/
+  );
+  if (navToMatch) {
+    const dest = navToMatch[1].trim();
+    // Ensure mode switches to NAVIGATE first, then set destination
+    if (window.currentMode !== 'NAVIGATE') {
+      window.sendCommand?.({ type: 'command', action: 'set_mode', mode: 'NAVIGATE' });
+      window.applyModeState?.({ current_mode: 'NAVIGATE' });
+    }
+    window.sendCommand?.({ type: 'command', action: 'nav_destination', destination: dest });
+    window.showToast?.(`Navigating to: ${dest}`);
+    return true;
+  }
   if (lower === 'read' || lower === 'reading' || lower.includes('read mode') || lower === 'go to read') {
     window.sendCommand?.({ type: 'command', action: 'set_mode', mode: 'READ' });
     window.applyModeState?.({ current_mode: 'READ' });
@@ -138,7 +172,7 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
-  // "Where is X?" — route as ASK question (same as chat path, so both voice+chat use brain.answer)
+  // "Where is X?" — route as ASK question
   const whereMatch = lower.match(/^(?:where is|where's)\s+(?:my\s+|the\s+)?(.+)$/);
   if (whereMatch) {
     const target = whereMatch[1].trim();
@@ -181,7 +215,7 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
-  // Repeat last message — re-speaks the current guidance banner text via TTS
+  // Repeat last message
   if (lower === 'repeat' || lower === 'say again' || lower === 'again') {
     const bannerText = document.getElementById('guidance-text')?.textContent?.trim();
     if (bannerText) {
@@ -231,7 +265,7 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
-  // "Is it safe?" / "Can I walk?" shortcuts
+  // "Is it safe?" shortcuts
   if (lower === 'is it safe' || lower === 'can i walk' || lower === 'is the path clear' ||
       lower === 'is it clear' || lower === 'safe to go' || lower === 'clear path') {
     window.sendCommand?.({ type: 'command', action: 'ask',
@@ -247,7 +281,7 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
-  // "Which way?" / navigation shortcuts
+  // "Which way?" shortcuts
   if (lower === 'which way' || lower === 'which direction' || lower === 'where should i go' ||
       lower === 'guide me' || lower === 'navigate me') {
     window.sendCommand?.({ type: 'command', action: 'ask',
@@ -255,23 +289,37 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
-  // Free-form ASK question
+  // Free-form utterance in NAVIGATE mode — treat as destination if system is
+  // waiting for one (WAIT_DEST state), otherwise route as a navigation question.
+  if (window.currentMode === 'NAVIGATE') {
+    const navState = window._navState || 'IDLE';
+    if (navState === 'WAIT_DEST') {
+      // System just asked "Where would you like to go?" — user's reply IS the destination
+      window.sendCommand?.({ type: 'command', action: 'nav_destination', destination: transcript });
+      window.showToast?.(`Destination set: "${transcript}"`);
+      return true;
+    }
+    // ACTIVE navigate mode — treat as a question about the current scene/path
+    window.sendCommand?.({ type: 'command', action: 'ask',
+      question: transcript, input_source: 'voice' });
+    window.showToast?.(`Asking: "${transcript}"`);
+    return true;
+  }
+
+  // Free-form ASK question — auto-sent immediately, no button press needed
   if (window.currentMode !== 'ASK') {
     window.applyModeState?.({ current_mode: 'ASK' });
   }
   window.sendCommand?.({ type: 'command', action: 'ask', question: transcript, input_source: 'voice' });
-
-  // Echo in the text input briefly for visual feedback
-  const askInput = document.getElementById('ask-input');
-  if (askInput) {
-    askInput.value = transcript;
-    setTimeout(() => { if (askInput.value === transcript) askInput.value = ''; }, 3000);
-  }
   return false;
 }
 
+// Debounced public version — drops duplicate recognition events within 800 ms
+const routeVoiceCommand = _debounce(_routeVoiceCommandRaw, 800);
+
+// ────────────────────────────────────────────────────────────────────────────
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const micBtn        = document.getElementById('btn-mic');           // header mic button
+const micBtn        = document.getElementById('btn-mic');           // header mic (PTT)
 const voiceBtn      = document.getElementById('btn-voice-activate'); // big tap button
 
 if (!SpeechRecognition) {
@@ -285,6 +333,9 @@ if (!SpeechRecognition) {
     voiceBtn.title    = 'Voice recognition not supported in this browser';
     voiceBtn.disabled = true;
     voiceBtn.style.opacity = '0.4';
+    // Update label so the user knows
+    const lbl = voiceBtn.parentElement?.querySelector('.voice-activate-label');
+    if (lbl) lbl.textContent = 'Voice not supported';
   }
 } else {
   // ════════════════════════════════════════════════════════════════
@@ -296,9 +347,9 @@ if (!SpeechRecognition) {
   recPTT.maxAlternatives = 1;
   recPTT.continuous      = false;
 
-  let pttListening    = false;
-  let pttHoldActive   = false;
-  let listeningBadge  = null;
+  let pttListening   = false;
+  let pttHoldActive  = false;
+  let listeningBadge = null;
 
   if (micBtn) {
     micBtn.addEventListener('mousedown',  startPTT);
@@ -313,6 +364,8 @@ if (!SpeechRecognition) {
     pttHoldActive = true;
     micBtn.classList.add('listening');
     showListeningBadge();
+    // BUG FIX: unmute server STT so it processes audio while PTT is active
+    window.sendCommand?.({ type: 'command', action: 'stt_unmute' });
     try { recPTT.start(); } catch (_) {}
   }
 
@@ -320,6 +373,8 @@ if (!SpeechRecognition) {
     if (!pttHoldActive) return;
     pttHoldActive = false;
     try { recPTT.stop(); } catch (_) {}
+    // BUG FIX: mute server STT again once PTT ends
+    window.sendCommand?.({ type: 'command', action: 'stt_mute' });
   }
 
   function clearPTTState() {
@@ -365,8 +420,11 @@ if (!SpeechRecognition) {
     recTA.maxAlternatives = 1;
     recTA.continuous      = false;
 
-    let taActive      = false;   // whether tap-mode is currently listening
+    let taActive     = false;  // whether tap-mode is currently listening
+    let noSpeechCount = 0;     // consecutive no-speech errors — escape hatch
 
+    // BUG FIX: .voice-activate-label is now a sibling of #btn-voice-activate
+    // inside .voice-activate-section — querySelector works correctly
     const voiceLabel = voiceBtn.parentElement?.querySelector('.voice-activate-label');
 
     function setTAListening(on) {
@@ -374,9 +432,10 @@ if (!SpeechRecognition) {
       voiceBtn.classList.toggle('listening', on);
       voiceBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
       if (voiceLabel) {
-        voiceLabel.textContent = on ? 'Listening...' : 'Tap to speak a command';
+        voiceLabel.textContent = on ? 'Listening…' : 'Tap to speak';
         voiceLabel.classList.toggle('listening', on);
       }
+      if (!on) noSpeechCount = 0; // reset stuck counter when manually stopped
     }
 
     function startTA() {
@@ -387,33 +446,43 @@ if (!SpeechRecognition) {
 
     function stopTA() {
       setTAListening(false);
+      try { recTA.stop(); } catch (_) {}
     }
 
-    // Tap: click on desktop, touchend on mobile (prevent ghost click with preventDefault)
+    // Tap: click on desktop, touchend on mobile
     voiceBtn.addEventListener('click', () => {
       if (taActive) {
         stopTA();
-        try { recTA.stop(); } catch (_) {}
       } else {
         startTA();
       }
     });
 
     recTA.onresult = (event) => {
+      noSpeechCount = 0; // successful result resets the stuck counter
       const transcript = event.results[0][0].transcript.trim();
       routeVoiceCommand(transcript);
     };
 
     recTA.onerror = (e) => {
-      if (e.error !== 'no-speech') {
+      if (e.error === 'no-speech') {
+        noSpeechCount++;
+        // BUG FIX: after 5 consecutive no-speech events, escape the stuck state
+        // so the button doesn't show "Listening" forever with a broken mic
+        if (noSpeechCount >= 5) {
+          setTAListening(false);
+          window.showToast?.('Mic not hearing audio — tap to try again');
+          noSpeechCount = 0;
+        }
+        // else: onend will restart as normal — don't call setTAListening(false)
+      } else {
         window.showToast?.(`Mic error: ${e.error}`);
         setTAListening(false);
       }
-      // no-speech: don't stop — onend will restart
     };
 
     recTA.onend = () => {
-      // If still toggled on, immediately restart for continuous listening
+      // If still toggled on (and not stuck), immediately restart for continuous listening
       if (taActive) {
         try { recTA.start(); } catch (_) {}
       }

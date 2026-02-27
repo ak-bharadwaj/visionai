@@ -237,8 +237,7 @@ function connectWS() {
 }
 connectWS();
 
-// Conversation panel is always visible — answers accumulate as chat bubbles
-showPanel(document.getElementById('conversation-panel'));
+// Conversation panel is hidden by default until a turn occurs
 
 // ─── sendCommand ──────────────────────────────────────────────────
 function sendCommand(obj) {
