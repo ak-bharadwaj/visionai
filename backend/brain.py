@@ -14,6 +14,9 @@ SCENE_KEYWORDS        = {"front", "ahead", "see", "there", "around",
 PERSON_COUNT_KEYWORDS = {"people", "person", "anyone", "anybody",
                           "someone", "somebody", "how many", "crowd"}
 SAFETY_KEYWORDS       = {"safe", "walk", "move", "proceed", "go", "step"}
+DIRECTION_KEYWORDS    = {"which way", "which direction", "turn left", "turn right",
+                          "go left", "go right", "straight", "navigate", "direction",
+                          "left or right", "where should i go", "where do i go"}
 
 # Max conversation turns kept in memory (each turn = question + answer)
 MAX_HISTORY = 4
@@ -60,6 +63,7 @@ class Brain:
         if any(k in q_words for k in SAFETY_KEYWORDS):       return False
         LOCATION_KEYWORDS = {"where", "is there", "can you see", "find", "locate", "spot"}
         if any(k in q_lower for k in LOCATION_KEYWORDS):   return False
+        if any(k in q_lower for k in DIRECTION_KEYWORDS):  return False
         return True  # nothing matched — will hit the LLM
 
     def answer(self, question: str, frame,
@@ -169,6 +173,48 @@ class Brain:
                 )
                 self._history.append((question, result))
                 return result
+
+        # 4e. Direction / navigation guidance — instant from YOLO detections
+        if any(k in q_lower for k in DIRECTION_KEYWORDS):
+            blocking_ahead = [
+                d for d in detections
+                if hasattr(d, "direction") and d.direction == "ahead"
+                and hasattr(d, "distance_level") and d.distance_level <= 2
+            ]
+            left_clear  = not any(
+                hasattr(d, "direction") and d.direction in ("left", "far left")
+                and hasattr(d, "distance_level") and d.distance_level <= 2
+                for d in detections
+            )
+            right_clear = not any(
+                hasattr(d, "direction") and d.direction in ("right", "far right")
+                and hasattr(d, "distance_level") and d.distance_level <= 2
+                for d in detections
+            )
+            if not blocking_ahead:
+                result = "Path ahead looks clear. You can go straight."
+            elif left_clear and right_clear:
+                result = (
+                    f"There is a {blocking_ahead[0].class_name} blocking ahead. "
+                    "Both sides appear open — turn left or right."
+                )
+            elif left_clear:
+                result = (
+                    f"There is a {blocking_ahead[0].class_name} ahead. "
+                    "Turn left — that side appears clearer."
+                )
+            elif right_clear:
+                result = (
+                    f"There is a {blocking_ahead[0].class_name} ahead. "
+                    "Turn right — that side appears clearer."
+                )
+            else:
+                result = (
+                    "Objects detected on all sides. "
+                    "Stop and move slowly — I'll guide you as you turn."
+                )
+            self._history.append((question, result))
+            return result
 
         # 5. General LLM path — includes conversation history context
         obj_desc   = self._describe_objects(detections)

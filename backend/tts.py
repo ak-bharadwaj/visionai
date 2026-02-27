@@ -4,8 +4,8 @@ logger = logging.getLogger(__name__)
 
 
 class TTSEngine:
-    DEDUP_WINDOW    = 3.0   # seconds — how long to suppress identical phrases
-    NAV_RATE_LIMIT  = 2.5   # seconds — min gap between non-priority messages
+    DEDUP_WINDOW    = 8.0   # seconds — how long to suppress identical phrases
+    NAV_RATE_LIMIT  = 5.0   # seconds — min gap between non-priority messages
 
     def __init__(self):
         self._q:              queue.Queue      = queue.Queue(maxsize=5)

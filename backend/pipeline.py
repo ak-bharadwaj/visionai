@@ -355,10 +355,33 @@ class PipelineRunner:
             nav_msg = ""
             scene_memory.update(spatial_results)
 
+            # NAVIGATE in-mode questions: answer without switching to ASK mode
+            with self._q_lock:
+                nav_question     = self._pending_question
+                nav_input_source = self._input_source
+                self._pending_question = None
+            if nav_question:
+                answer = brain.answer(nav_question, frame, spatial_results, [])
+                tts_engine.speak(answer, priority=True)
+                self._send({
+                    "type":         "answer",
+                    "mode":         "NAVIGATE",
+                    "question":     nav_question,
+                    "answer":       answer,
+                    "input_source": nav_input_source,
+                    "context":      [f"{r.class_name} ({r.direction}, {r.distance})"
+                                     for r in spatial_results[:5]],
+                    "frame_w":      w,
+                    "frame_h":      h,
+                    "fps":          round(self.fps, 1),
+                })
+                self._tick(t0)
+                continue
+
             # Empty frame reassurance — if nothing detected for 10 consecutive frames
             if not spatial_results:
                 self._empty_frame_count += 1
-                if self._empty_frame_count >= 10:
+                if self._empty_frame_count >= 30:
                     tts_engine.speak("Area looks clear. Move slowly and I'll alert you.", priority=False)
                     self._empty_frame_count = 0
             else:

@@ -11,11 +11,11 @@ RISK_SCORE: dict[str, int] = {
 DEFAULT_RISK = 3
 
 MIN_ALERT_LEVEL: dict[str, int] = {
-    "person": 4, "car": 4, "motorcycle": 4, "bicycle": 4,
+    "person": 3, "car": 4, "motorcycle": 4, "bicycle": 4,
     "bus": 4, "truck": 4, "train": 4,
-    "chair": 3, "couch": 3, "dining table": 3, "bench": 3, "door": 3,
+    "chair": 2, "couch": 2, "dining table": 2, "bench": 2, "door": 2,
 }
-DEFAULT_MIN_LEVEL = 2
+DEFAULT_MIN_LEVEL = 1  # everything else only alerts when very close
 
 # FIXED: "{dir}" is always used with preposition now
 # "ahead" → "Chair ahead, very close"
