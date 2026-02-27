@@ -25,6 +25,7 @@
   <div class="camera-wrap" id="camera-wrap">
     <video id="camera-feed" class="camera-feed" autoplay playsinline muted aria-hidden="true"></video>
     <canvas id="overlay-canvas" class="overlay-canvas" aria-hidden="true"></canvas>
+    <canvas id="nav-hud-canvas" class="nav-hud-canvas" aria-hidden="true"></canvas>
 
     <!-- Placeholder shown while camera is starting -->
     <div id="camera-placeholder" class="camera-placeholder" aria-label="Camera starting">
@@ -353,6 +354,11 @@
   <script>
     window._navState = 'IDLE';
     window._navDestination = '';
+    // Shared data store for the Nav HUD canvas renderer
+    window._navHudData = {
+      detections: [], routing_direction: 'clear', severity: 0,
+      frame_w: 640, frame_h: 480, nav_state: 'IDLE', nav_destination: '', ts: 0
+    };
     (function patchWebSocket() {
       const _OrigWS = window.WebSocket;
 
@@ -388,6 +394,20 @@
           // severity 1 = HIGH (red), 2 = MEDIUM (amber), 3 = LOW (green)
           const sev = Math.min(3, Math.max(1, Math.round(d.severity)));
           document.body.classList.add('nav-sev' + sev);
+        }
+
+        // Populate Nav HUD data store for the canvas renderer
+        if (isNavigate) {
+          window._navHudData = {
+            detections:        Array.isArray(d.detections) ? d.detections : [],
+            routing_direction: d.routing_direction || 'clear',
+            severity:          typeof d.severity === 'number' ? d.severity : 0,
+            frame_w:           d.frame_w || 640,
+            frame_h:           d.frame_h || 480,
+            nav_state:         window._navState,
+            nav_destination:   dest,
+            ts:                Date.now(),
+          };
         }
       }
 
@@ -425,6 +445,260 @@
   <script src="/static/audio.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/voice.js"></script>
+
+  <!-- ── Navigation HUD canvas renderer ────────────────────────── -->
+  <!-- Draws on #nav-hud-canvas (z-index 2, above camera/overlay, below all UI).
+       Only renders in NAVIGATE mode. Data comes from window._navHudData,
+       populated by the WS interceptor above. -->
+  <script>
+  (function initNavHUD() {
+    const canvas = document.getElementById('nav-hud-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    // Compass heading from DeviceOrientationEvent (degrees, 0=North)
+    let _heading = null;
+    if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientationabsolute', e => {
+        if (e.alpha != null) _heading = e.alpha;
+      }, { passive: true });
+      window.addEventListener('deviceorientation', e => {
+        if (_heading == null && e.alpha != null) _heading = e.alpha;
+      }, { passive: true });
+    }
+
+    // Resize canvas to match display size
+    function _resize() {
+      const w = canvas.offsetWidth || window.innerWidth;
+      const h = canvas.offsetHeight || window.innerHeight;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width  = w;
+        canvas.height = h;
+      }
+    }
+    window.addEventListener('resize', _resize, { passive: true });
+    _resize();
+
+    // ── Direction arrow panel ─────────────────────────────────────
+    // Draws a Google-Maps-style pill at bottom-center, just above the mode tabs.
+    const _DIR_COLORS = {
+      clear:      '#34A853',   // green
+      straight:   '#34A853',   // green
+      turn_left:  '#F9A825',   // amber
+      turn_right: '#F9A825',   // amber
+      stop:       '#E53935',   // red
+    };
+
+    function _drawDirectionArrow(dir, alpha) {
+      const cw = canvas.width;
+      const ch = canvas.height;
+      const panelW = 90, panelH = 90;
+      const panelX = cw / 2 - panelW / 2;
+      // Position: 120px from bottom (above mode tabs ~64px + margin 56px)
+      const panelY = ch - 120 - panelH;
+
+      const color = _DIR_COLORS[dir] || '#34A853';
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      // Panel background
+      ctx.beginPath();
+      ctx.roundRect(panelX, panelY, panelW, panelH, 18);
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Arrow icon in panel center
+      ctx.fillStyle = color;
+      ctx.font = 'bold 44px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const cx = panelX + panelW / 2;
+      const cy = panelY + panelH / 2;
+
+      const arrows = {
+        clear:      '↑',
+        straight:   '↑',
+        turn_left:  '←',
+        turn_right: '→',
+        stop:       '■',
+      };
+      ctx.fillText(arrows[dir] || '↑', cx, cy);
+
+      ctx.restore();
+    }
+
+    // ── Detection labels on bboxes ────────────────────────────────
+    // Draws distance + motion labels scaled to the canvas.
+    function _drawDetectionLabels(detections, fw, fh, alpha) {
+      if (!detections || !detections.length) return;
+      const cw = canvas.width;
+      const ch = canvas.height;
+      const scaleX = cw / fw;
+      const scaleY = ch / fh;
+
+      const LEVEL_COLORS = { 1: '#E53935', 2: '#F9A825', 3: '#34A853', 4: '#34A853' };
+      const MOTION_ICONS = { approaching: '▲', receding: '▼', static: '●' };
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      detections.forEach(det => {
+        const x1 = (det.x1 || 0) * scaleX;
+        const y1 = (det.y1 || 0) * scaleY;
+        const x2 = (det.x2 || 0) * scaleX;
+
+        const lv = det.distance_level || 3;
+        const color = LEVEL_COLORS[lv] || '#34A853';
+        const icon  = MOTION_ICONS[det.motion_state] || '●';
+        const distFt = det.distance_ft != null ? det.distance_ft.toFixed(1) : '?';
+        const distM  = det.distance    ? det.distance : '?';
+        const label  = `${icon} ${det.class_name || '?'}  ${distFt}ft/${distM}`;
+
+        const labelX = (x1 + x2) / 2;
+        const labelY = Math.max(y1 - 6, 14);
+
+        ctx.font = 'bold 11px "Roboto Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+
+        // Background pill
+        const metrics  = ctx.measureText(label);
+        const lw = metrics.width + 12;
+        const lh = 16;
+        ctx.fillStyle = 'rgba(0,0,0,0.70)';
+        ctx.beginPath();
+        ctx.roundRect(labelX - lw / 2, labelY - lh, lw, lh, 5);
+        ctx.fill();
+
+        // Label text
+        ctx.fillStyle = color;
+        ctx.fillText(label, labelX, labelY);
+
+        // ETA badge for imminent collisions (< 5s)
+        const eta = det.collision_eta_s;
+        if (eta > 0 && eta < 5) {
+          const etaLabel = `⚠ ${eta.toFixed(0)}s`;
+          const em = ctx.measureText(etaLabel);
+          const ew = em.width + 10;
+          const eh = 16;
+          const ex = (x1 + x2) / 2;
+          const ey = labelY - lh - 2;
+          // Pulsing via time-based alpha
+          const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+          ctx.globalAlpha = alpha * (0.7 + 0.3 * pulse);
+          ctx.fillStyle = 'rgba(229,57,53,0.90)';
+          ctx.beginPath();
+          ctx.roundRect(ex - ew / 2, ey - eh, ew, eh, 5);
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 10px sans-serif';
+          ctx.fillText(etaLabel, ex, ey);
+          ctx.globalAlpha = alpha;
+        }
+      });
+
+      ctx.restore();
+    }
+
+    // ── Compass ring ──────────────────────────────────────────────
+    function _drawCompass(heading, alpha) {
+      if (heading == null) return;
+      const cw = canvas.width;
+      const R = 28;
+      const cx = cw - R - 14;
+      const cy = R + 14;
+
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.85;
+
+      // Ring
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.60)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // North needle
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate((heading * Math.PI) / 180);
+      ctx.beginPath();
+      ctx.moveTo(0, -R + 6);
+      ctx.lineTo(4, 4);
+      ctx.lineTo(-4, 4);
+      ctx.closePath();
+      ctx.fillStyle = '#E53935';
+      ctx.fill();
+      ctx.restore();
+
+      // N label
+      ctx.fillStyle = 'rgba(255,255,255,0.80)';
+      ctx.font = 'bold 8px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('N', cx, cy - R + 9);
+
+      ctx.restore();
+    }
+
+    // ── Main RAF loop ─────────────────────────────────────────────
+    const STALE_MS = 3000;
+
+    function _renderFrame() {
+      requestAnimationFrame(_renderFrame);
+
+      // Only draw in NAVIGATE mode
+      if (window.currentMode !== 'NAVIGATE') {
+        _resize();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+
+      _resize();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const hud   = window._navHudData;
+      const age   = Date.now() - (hud.ts || 0);
+      // Fade out when data is stale (no frames for > 3s)
+      const alpha = hud.ts === 0 ? 0 : Math.max(0, 1 - Math.max(0, age - STALE_MS) / 1000);
+      if (alpha <= 0) return;
+
+      const dir  = hud.routing_direction || 'clear';
+      const fw   = hud.frame_w || 640;
+      const fh   = hud.frame_h || 480;
+      const dets = hud.detections || [];
+
+      _drawDetectionLabels(dets, fw, fh, alpha);
+      _drawDirectionArrow(dir, alpha);
+      _drawCompass(_heading, alpha);
+    }
+
+    // roundRect polyfill for older browsers
+    if (!CanvasRenderingContext2D.prototype.roundRect) {
+      CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+        this.beginPath();
+        this.moveTo(x + r, y);
+        this.lineTo(x + w - r, y);
+        this.quadraticCurveTo(x + w, y, x + w, y + r);
+        this.lineTo(x + w, y + h - r);
+        this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        this.lineTo(x + r, y + h);
+        this.quadraticCurveTo(x, y + h, x, y + h - r);
+        this.lineTo(x, y + r);
+        this.quadraticCurveTo(x, y, x + r, y);
+        this.closePath();
+      };
+    }
+
+    requestAnimationFrame(_renderFrame);
+  })();
+  </script>
 
   <script>
     // ── Ripple effect ─────────────────────────────────────────────

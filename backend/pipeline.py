@@ -614,19 +614,37 @@ class PipelineRunner:
         with self._q_lock:
             _nav_state = self._nav_state
             _nav_dest  = self._nav_destination
+
+        # Derive a simple directional enum from the routing narration text
+        # so the frontend HUD can render a Google-Maps-style turn arrow.
+        _routing_text = narrator_build_routing(confirmed, frame_w=w)
+        if _routing_text:
+            _rt_lower = _routing_text.lower()
+            if "turn right" in _rt_lower:
+                _routing_dir = "turn_right"
+            elif "turn left" in _rt_lower:
+                _routing_dir = "turn_left"
+            elif "stop" in _rt_lower:
+                _routing_dir = "stop"
+            else:
+                _routing_dir = "straight"
+        else:
+            _routing_dir = "clear"
+
         return {
-            "type":         "narration",
-            "mode":         "NAVIGATE",
-            "text":         text,
-            "severity":     severity,
-            "detections":   [self._serial_tracked(o) for o in all_tracks],
-            "show_overlay": mode_manager.snapshot().get("show_overlay", True),
-            "frame_w":      w,
-            "frame_h":      h,
-            "fps":          round(self.fps, 1),
-            "scene_graph":  build_scene_graph(all_tracks),
-            "nav_state":    _nav_state,
-            "nav_destination": _nav_dest,
+            "type":              "narration",
+            "mode":              "NAVIGATE",
+            "text":              text,
+            "severity":          severity,
+            "detections":        [self._serial_tracked(o) for o in all_tracks],
+            "show_overlay":      mode_manager.snapshot().get("show_overlay", True),
+            "frame_w":           w,
+            "frame_h":           h,
+            "fps":               round(self.fps, 1),
+            "scene_graph":       build_scene_graph(all_tracks),
+            "nav_state":         _nav_state,
+            "nav_destination":   _nav_dest,
+            "routing_direction": _routing_dir,
         }
 
     # ── READ mode ─────────────────────────────────────────────────────────────
@@ -918,6 +936,8 @@ class PipelineRunner:
             "distance_ft":    round(obj.smoothed_distance_m * 3.28084, 1),
             "risk_level":     obj.risk_level,
             "risk_score":     round(obj.risk_score, 3),
+            "motion_state":   getattr(obj, "motion_state", "static"),
+            "collision_eta_s": round(getattr(obj, "collision_eta_s", 0.0), 1),
             "x1": obj.x1, "y1": obj.y1, "x2": obj.x2, "y2": obj.y2,
         }
 
