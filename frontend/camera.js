@@ -35,6 +35,9 @@ document.getElementById('btn-apply-ip').addEventListener('click', () => {
   const ip = document.getElementById('ip-input').value.trim();
   if (ip) {
     applyCameraSource(ip);
+    // Also tell the backend to switch its camera stream
+    const url = ip.startsWith('http') ? ip : `http://${ip}`;
+    window.sendCommand?.({ type: 'command', action: 'set_camera', source: `${url}/video` });
     showToast('Camera source applied');
     // Auto-close settings panel
     document.getElementById('settings-panel').classList.add('hidden');

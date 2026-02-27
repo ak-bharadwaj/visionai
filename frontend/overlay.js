@@ -14,19 +14,18 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// Scale factor: bbox coords are in original camera frame space (640×480).
-// Backend detector.py maps detections back to original frame coords before sending.
+// Scale factor: bbox coords are in original camera frame space.
+// Backend sends frame_w / frame_h with every detection message.
 function scaleCoord(val, model_dim, display_dim) {
   return (val / model_dim) * display_dim;
 }
-const MODEL_W = 640, MODEL_H = 480;   // original camera frame size (NOT inference size)
 
 const overlay = {
-  update(detections) {
+  update(detections, frame_w, frame_h) {
     resizeCanvas();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     this._drawZones();
-    detections.forEach(d => this._drawBox(d));
+    detections.forEach(d => this._drawBox(d, frame_w, frame_h));
   },
   clear() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -36,8 +35,9 @@ const overlay = {
     ctx.lineWidth = 1;
     const w = canvas.width;
     const h = canvas.height;
-    // Left | Center | Right zone dividers
-    [0.33, 0.67].forEach(ratio => {
+    // Zone dividers match spatial.py thresholds: 20%, 40%, 60%, 75%
+    // Zones: far-left | left | ahead | right | far-right
+    [0.20, 0.40, 0.60, 0.75].forEach(ratio => {
       ctx.beginPath();
       ctx.moveTo(w * ratio, 0);
       ctx.lineTo(w * ratio, h);
@@ -47,16 +47,18 @@ const overlay = {
     ctx.fillStyle = 'rgba(255,255,255,0.2)';
     ctx.font = 'bold 9px Inter, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('LEFT', w * 0.167, 14);
-    ctx.fillText('AHEAD', w * 0.5, 14);
-    ctx.fillText('RIGHT', w * 0.833, 14);
+    ctx.fillText('FAR-L', w * 0.10, 14);
+    ctx.fillText('LEFT',  w * 0.30, 14);
+    ctx.fillText('AHEAD', w * 0.50, 14);
+    ctx.fillText('RIGHT', w * 0.675, 14);
+    ctx.fillText('FAR-R', w * 0.875, 14);
   },
-  _drawBox(d) {
+  _drawBox(d, frame_w, frame_h) {
     const dw = canvas.width, dh = canvas.height;
-    const x1 = scaleCoord(d.x1, MODEL_W, dw);
-    const y1 = scaleCoord(d.y1, MODEL_H, dh);
-    const x2 = scaleCoord(d.x2, MODEL_W, dw);
-    const y2 = scaleCoord(d.y2, MODEL_H, dh);
+    const x1 = scaleCoord(d.x1, frame_w, dw);
+    const y1 = scaleCoord(d.y1, frame_h, dh);
+    const x2 = scaleCoord(d.x2, frame_w, dw);
+    const y2 = scaleCoord(d.y2, frame_h, dh);
     const color = COLORS[d.distance_level] || '#ffffff';
     const conf  = Math.round(d.confidence * 100);
     const label = `${d.class_name} · ${d.distance} · ${conf}%`;

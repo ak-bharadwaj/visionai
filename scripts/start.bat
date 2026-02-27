@@ -16,5 +16,8 @@ if not exist .env (
     echo [VisionTalk] Created .env — edit CAMERA_SOURCE with your phone's IP
 )
 
+echo [VisionTalk] Pre-loading models (warmup)...
+python scripts\warmup.py
+
 echo [VisionTalk] Starting server at http://0.0.0.0:8000
 uvicorn backend.main:app --host 0.0.0.0 --port 8000

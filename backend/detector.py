@@ -73,7 +73,7 @@ class ObjectDetector:
         # Preprocess: resize, BGR→RGB, normalize, add batch dim
         img = cv2.resize(frame, (self.SIZE, self.SIZE))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))[np.newaxis]  # → [1, 3, 320, 320]
+        img = np.transpose(img, (2, 0, 1))[np.newaxis]  # → [1, 3, SIZE, SIZE]
 
         # Inference
         raw = self._sess.run(None, {self._input_name: img})[0]  # [1, 84, 8400]

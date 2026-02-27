@@ -60,6 +60,7 @@ class TTSEngine:
         self._last[text] = now
 
     def _worker(self):
+        speak_count = 0
         while True:
             text = self._q.get()
             if self._engine:
@@ -68,6 +69,11 @@ class TTSEngine:
                     self._engine.runAndWait()
                 except Exception as e:
                     logger.error(f"TTS speak error: {e}")
+            speak_count += 1
+            # Purge dedup dict every 200 speaks to prevent unbounded memory growth
+            if speak_count % 200 == 0:
+                cutoff = time.time() - 60.0
+                self._last = {k: v for k, v in self._last.items() if v > cutoff}
             self._q.task_done()
 
 

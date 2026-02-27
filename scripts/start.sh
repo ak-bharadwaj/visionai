@@ -4,4 +4,5 @@ set -e
 source venv/bin/activate
 pip install -r requirements.txt --quiet
 [ ! -f .env ] && cp .env.example .env
+python scripts/warmup.py
 uvicorn backend.main:app --host 0.0.0.0 --port 8000

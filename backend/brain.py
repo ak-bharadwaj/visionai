@@ -208,16 +208,34 @@ class Brain:
         - Finds 'door' in detections if present.
         - A door is likely OPEN if: no large object directly fills its bbox,
           or OCR/YOLO finds a clear path through it.
-        - Falls back to positional description if door not detected.
+        - Falls back to OCR text heuristics if door not detected by YOLO
+          (COCO-80 has no 'door' class — doors appear as tvs, walls, etc.)
         """
         door_det = next(
             (d for d in detections if hasattr(d, "class_name") and d.class_name == "door"),
             None
         )
         if door_det is None:
-            # No door detected by YOLO (COCO doesn't have a dedicated 'door' class —
-            # doors sometimes appear as tvs or walls; give positional fallback)
-            nearby_text = ", ".join(texts[:3]) if texts else "no text"
+            # No door in YOLO detections — check OCR text for door-related words
+            DOOR_TEXT_OPEN   = {"push", "pull", "open", "welcome", "enter", "entrance"}
+            DOOR_TEXT_CLOSED = {"closed", "close", "shut", "no entry", "exit only",
+                                "do not enter", "staff only", "private"}
+            texts_lower = [t.lower() for t in texts]
+            combined = " ".join(texts_lower)
+
+            for word in DOOR_TEXT_CLOSED:
+                if word in combined:
+                    return (
+                        f"I see text that says '{word.upper()}' — the door appears to be closed or restricted."
+                    )
+            for word in DOOR_TEXT_OPEN:
+                if word in combined:
+                    return (
+                        f"I see text that says '{word.upper()}' — there may be a door or entrance here."
+                    )
+
+            # No text clues either — give positional fallback
+            nearby_text = ", ".join(texts[:3]) if texts else "no text visible"
             return (
                 "I don't see a door directly, but there may be one nearby. "
                 f"Visible text: {nearby_text}."
@@ -308,7 +326,7 @@ class Brain:
                 headers={"Content-Type": "application/json"},
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 data   = json.loads(resp.read().decode("utf-8"))
                 answer = data.get("response", "").strip()
                 if answer:

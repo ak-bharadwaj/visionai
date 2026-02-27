@@ -29,11 +29,10 @@ function routeVoiceCommand(transcript) {
       banner.classList.add('sos-active');
       setTimeout(() => banner.classList.remove('sos-active'), 8000);
     }
-    // TTS via server (speak high priority)
+    // TTS via server — speak directly, no LLM involved
     window.sendCommand?.({
-      type: 'command', action: 'ask',
-      question: 'SOS activated — calling for help',
-      input_source: 'voice'
+      type: 'command', action: 'speak',
+      text: 'SOS activated. Stay calm. Alert others around you.'
     });
     window.showToast?.('SOS ACTIVATED');
     return true;
@@ -106,8 +105,21 @@ function routeVoiceCommand(transcript) {
     return true;
   }
 
-  // Find Mode — "find my keys", "find bottle", "find person", etc.
-  const findMatch = lower.match(/^(?:find|look for|search for|where is|where's)\s+(?:my\s+)?(.+)$/);
+  // "Where is X?" — route as ASK question (same as chat path, so both voice+chat use brain.answer)
+  const whereMatch = lower.match(/^(?:where is|where's)\s+(?:my\s+|the\s+)?(.+)$/);
+  if (whereMatch) {
+    const target = whereMatch[1].trim();
+    if (window.currentMode !== 'ASK') {
+      window.applyModeState?.({ current_mode: 'ASK' });
+    }
+    window.sendCommand?.({ type: 'command', action: 'ask',
+      question: `Where is the ${target}?`, input_source: 'voice' });
+    window.showToast?.(`Asking: where is ${target}?`);
+    return true;
+  }
+
+  // Find Mode — "find my keys", "find bottle", "look for person", etc.
+  const findMatch = lower.match(/^(?:find|look for|search for)\s+(?:my\s+)?(.+)$/);
   if (findMatch) {
     const target = findMatch[1].trim();
     window.sendCommand?.({ type: 'command', action: 'find_object', target });

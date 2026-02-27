@@ -190,6 +190,16 @@ async def ws_endpoint(websocket: WebSocket):
                     })
                     tts_engine.speak(f"Looking for {target}.", priority=False)
 
+            elif action == "set_camera":
+                source = data.get("source", "").strip()
+                if source:
+                    pipeline.set_camera_source(source)
+                    logger.info(f"👁 [VisionTalk] Camera source changed to: {source}")
+                    await websocket.send_json({
+                        "type": "system",
+                        "text": f"Camera switched to {source}"
+                    })
+
             elif action == "find_cancel":
                 pipeline.clear_find_target()
                 await websocket.send_json({

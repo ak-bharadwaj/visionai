@@ -69,6 +69,13 @@ class CameraStream:
         with self._lock:
             return self._frame.copy() if self._frame is not None else None
 
+    def set_source(self, new_source: str):
+        """Hot-swap camera source at runtime without restarting the thread."""
+        new_src = int(new_source) if str(new_source).isdigit() else new_source
+        logger.info(f"👁 [Camera] Switching source to: {new_src}")
+        self._source = new_src
+        self._reconnect()
+
     def stop(self):
         self._running = False
         time.sleep(0.15)

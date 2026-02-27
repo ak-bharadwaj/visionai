@@ -20,7 +20,7 @@ class SceneEntry:
 
 
 class SceneMemory:
-    TTL = 3.0
+    TTL = 8.0
 
     def __init__(self):
         self._entries: dict[str, SceneEntry] = {}
@@ -102,6 +102,11 @@ class SceneMemory:
         if key in self._announced and now - self._announced[key] < self._ttl:
             return False
         self._announced[key] = now
+        # FIX #11: prune stale entries to prevent unbounded dict growth
+        prune_before = now - self._ttl * 2
+        stale = [k for k, t in self._announced.items() if t < prune_before]
+        for k in stale:
+            del self._announced[k]
         return True
 
 

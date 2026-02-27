@@ -85,7 +85,7 @@ function handleNarration(data) {
   if (data.fps)  updateFps(data.fps);
   updateDetectivePanel(data.detections, data.fps);
   if ((overlayActive || demoPresentationActive) && data.detections?.length) {
-    overlay.update(data.detections);
+    overlay.update(data.detections, data.frame_w || 640, data.frame_h || 480);
   } else if (!overlayActive && !demoPresentationActive) {
     overlay.clear();
   }

@@ -86,11 +86,11 @@ Edit `.env` (created automatically on first run):
 
 ```env
 CAMERA_SOURCE=http://192.168.1.x:8080/video   # Your phone's IP stream URL
-OLLAMA_MODEL=llama3:8b                         # Local LLM model name (Ollama)
+OLLAMA_MODEL=phi3:mini                         # Local LLM model name (Ollama)
 TTS_RATE=175                                   # Speech rate (words/min)
 TTS_VOLUME=1.0                                 # TTS volume (0.0–1.0)
 INFERENCE_FPS=10                               # Max frames per second for inference
-INFERENCE_SIZE=320                             # YOLO input resolution (px)
+INFERENCE_SIZE=640                             # YOLO input resolution (px)
 DEPTH_EVERY_N_FRAMES=3                         # Run MiDaS every N frames
 LOG_LEVEL=INFO                                 # Logging verbosity (DEBUG/INFO/WARNING)
 ```
@@ -135,7 +135,7 @@ This loads YOLOv8n, MiDaS, and PaddleOCR and confirms each is ready.
 │   ├── overlay.js        # Canvas bounding box overlay
 │   ├── camera.js         # Camera feed + QR code display
 │   ├── voice.js          # Push-to-talk speech recognition
-│   ├── audio.js          # Stub (TTS is server-side)
+│   ├── audio.js          # Web Audio success ding
 │   ├── manifest.json     # PWA manifest
 │   └── sw.js             # Service worker (never intercepts /ws/ or :8080)
 ├── scripts/

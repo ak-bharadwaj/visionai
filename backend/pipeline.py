@@ -1,4 +1,4 @@
-import time, threading, asyncio, logging
+import time, threading, asyncio, logging, queue
 from typing import Callable
 import numpy as np
 
@@ -48,6 +48,9 @@ class PipelineRunner:
         self._no_text_count: int = 0
         # Find Mode hint counter
         self._find_hint_count: int = 0
+        # FIX #12: MiDaS depth runs in a background thread (stale-ok pattern)
+        self._depth_input:  queue.Queue = queue.Queue(maxsize=1)
+        self._depth_output: queue.Queue = queue.Queue(maxsize=1)
 
     # ── Public API (called from WS handler, thread-safe) ──────────
     def set_question(self, question: str, input_source: str = "chat"):
@@ -101,12 +104,43 @@ class PipelineRunner:
         self._detector = ObjectDetector()
         depth_estimator.load()
         world_detector.load()   # NEW: load YOLOWorld secondary detector
+        # FIX #5: preload PaddleOCR in background so first READ frame doesn't freeze
+        threading.Thread(
+            target=ocr_reader._ensure_loaded,
+            daemon=True,
+            name="OCRPreload"
+        ).start()
+        # FIX #12: depth runs in its own daemon thread — pipeline reads last result (stale-ok)
+        threading.Thread(
+            target=self._depth_worker,
+            daemon=True,
+            name="DepthThread"
+        ).start()
         tts_engine.start()
         self._loop  = event_loop
         self._bcast = broadcast_fn
         self._running = True
         threading.Thread(target=self._run, daemon=True, name="PipelineThread").start()
         logger.info("👁 [VisionTalk] Pipeline started.")
+
+    def _depth_worker(self):
+        """FIX #12: Consumes frames from _depth_input, puts results in _depth_output."""
+        while True:
+            frame = self._depth_input.get()   # blocks until a frame is queued
+            if frame is None:
+                break   # sentinel — shut down
+            result = depth_estimator.estimate(frame)
+            # Drain old result (if pipeline hasn't consumed it yet) before writing new one
+            try:
+                self._depth_output.get_nowait()
+            except queue.Empty:
+                pass
+            self._depth_output.put(result)
+
+    def set_camera_source(self, source: str):
+        """Hot-swap the camera stream source at runtime."""
+        if self._camera:
+            self._camera.set_source(source)
 
     def stop(self):
         self._running = False
@@ -134,12 +168,21 @@ class PipelineRunner:
             # YOLO — every frame
             detections = self._detector.detect(frame)
 
-            # MiDaS — every N frames
+            # MiDaS — every N frames (non-blocking: queue frame to depth thread)
             if frame_count % DEPTH_N == 0:
-                depth_map = depth_estimator.estimate(frame)
+                try:
+                    self._depth_input.put_nowait(frame)
+                except queue.Full:
+                    pass   # depth thread still busy — skip this frame (stale-ok)
+            # Pull latest depth result (non-blocking — uses last valid map if none ready)
+            try:
+                depth_map = self._depth_output.get_nowait()
+            except queue.Empty:
+                pass   # keep using previous depth_map
 
             # YOLOWorld — every WORLD_N frames (extra class detection)
-            if frame_count % WORLD_N == 0:
+            # Guard: only run in NAVIGATE mode — avoids interrupting OCR/LLM TTS
+            if mode_manager.is_navigate() and frame_count % WORLD_N == 0:
                 extra_dets = world_detector.detect(frame)
                 for d in extra_dets:
                     # Compute direction from bounding box centre
@@ -166,8 +209,8 @@ class PipelineRunner:
                         )
                         tts_engine.speak(msg, priority=(dist_level == 1))
 
-            # Stair/drop (TTS dedup handles repetition — 2s window)
-            if depth_estimator.detect_stair_drop(depth_map, h, w):
+            # Stair/drop — NAVIGATE only (suppress during READ/ASK to avoid disruption)
+            if mode_manager.is_navigate() and depth_estimator.detect_stair_drop(depth_map, h, w):
                 tts_engine.speak("Warning — possible step or drop ahead", priority=True)
 
             # Spatial analysis
@@ -233,13 +276,17 @@ class PipelineRunner:
                         read_msg = "No text found. Move closer or adjust angle."
                 # no else — read_msg persists from last OCR frame
 
-                self._send({
-                    "type": "reading",
-                    "mode": "READ",
-                    "text": read_msg,
-                    "detections": [self._serial(r) for r in spatial_results],
-                    "fps": round(self.fps, 1),
-                })
+                # FIX #21: don't broadcast on first READ frame before any OCR has run
+                if read_msg:
+                    self._send({
+                        "type": "reading",
+                        "mode": "READ",
+                        "text": read_msg,
+                        "detections": [self._serial(r) for r in spatial_results],
+                        "frame_w": w,
+                        "frame_h": h,
+                        "fps": round(self.fps, 1),
+                    })
                 self._tick(t0)
                 continue
 
@@ -289,6 +336,8 @@ class PipelineRunner:
                         "input_source": input_source,   # 'voice' or 'chat'
                         "context":      [f"{r.class_name} ({r.direction}, {r.distance})"
                                          for r in spatial_results[:5]],
+                        "frame_w":      w,
+                        "frame_h":      h,
                         "fps":          round(self.fps, 1),
                     })
 
@@ -301,6 +350,9 @@ class PipelineRunner:
             # ═══════════════════════════════════════════
             # MODE: NAVIGATE (default)
             # ═══════════════════════════════════════════
+            # FIX #15: reset nav_msg on every NAVIGATE entry so stale messages
+            # from a prior mode switch never bleed through to this frame.
+            nav_msg = ""
             scene_memory.update(spatial_results)
 
             # Empty frame reassurance — if nothing detected for 10 consecutive frames
@@ -367,6 +419,8 @@ class PipelineRunner:
                 "severity":     prioritized[0].distance_level if prioritized else 0,
                 "detections":   [self._serial(r) for r in spatial_results],
                 "show_overlay": mode_manager.snapshot()["show_overlay"],
+                "frame_w":      w,
+                "frame_h":      h,
                 "fps":          round(self.fps, 1),
             })
 
@@ -389,7 +443,7 @@ class PipelineRunner:
 
     def _tick(self, t0: float):
         elapsed = time.time() - t0
-        self.fps = 1.0 / elapsed if elapsed > 0 else FPS_CAP
+        self.fps = min(1.0 / elapsed, FPS_CAP) if elapsed > 0 else FPS_CAP
         time.sleep(max(0, (1 / FPS_CAP) - elapsed))
 
 
