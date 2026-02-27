@@ -39,49 +39,13 @@ async def broadcast(data: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start pipeline on startup. Stop on shutdown. Run FPS watchdog."""
+    """Start pipeline on startup. Stop on shutdown."""
     loop = asyncio.get_running_loop()
     pipeline.start(loop, broadcast)
-    logger.info("👁 [VisionTalk] Server started — pipeline running.")
-    watchdog_task = asyncio.create_task(_fps_watchdog())
+    logger.info("👁 [VisionTalk] Server started — event-driven pipeline ready.")
     yield
-    watchdog_task.cancel()
     pipeline.stop()
     logger.info("👁 [VisionTalk] Server stopped.")
-
-
-async def _fps_watchdog():
-    """
-    Background task that monitors pipeline FPS.
-    If FPS stays at 0 for more than 10 consecutive seconds while the pipeline
-    is supposed to be running, it attempts a self-heal: stop then restart.
-    """
-    _STALL_LIMIT = 10.0   # seconds of zero-FPS before restart
-    stall_since: float | None = None
-
-    while True:
-        await asyncio.sleep(2.0)
-        fps = pipeline.fps
-        if fps == 0:
-            now = asyncio.get_event_loop().time()
-            if stall_since is None:
-                stall_since = now
-            elif now - stall_since >= _STALL_LIMIT:
-                logger.critical(
-                    "👁 [VisionTalk] WATCHDOG: Pipeline FPS has been 0 for "
-                    f"{_STALL_LIMIT:.0f}s — attempting self-heal restart."
-                )
-                try:
-                    loop = asyncio.get_running_loop()
-                    pipeline.stop()
-                    await asyncio.sleep(1.0)
-                    pipeline.start(loop, broadcast)
-                    logger.info("👁 [VisionTalk] WATCHDOG: Pipeline restarted successfully.")
-                except Exception as e:
-                    logger.error(f"👁 [VisionTalk] WATCHDOG: Restart failed: {e}")
-                stall_since = None  # reset regardless so we don't tight-loop restarts
-        else:
-            stall_since = None  # FPS is healthy — clear stall timer
 
 
 app = FastAPI(lifespan=lifespan, title="VisionTalk")
@@ -128,6 +92,30 @@ async def ws_endpoint(websocket: WebSocket):
     try:
         while True:
             data   = await websocket.receive_json()
+
+            # ── Frame from browser camera (getUserMedia) ──────────────
+            if data.get("type") == "frame":
+                import base64
+                import cv2
+                import numpy as np
+                img_b64  = data["data"]
+                # Strip data-URI prefix if present ("data:image/jpeg;base64,...")
+                if "," in img_b64:
+                    img_b64 = img_b64.split(",", 1)[1]
+                img_bytes = base64.b64decode(img_b64)
+                arr  = np.frombuffer(img_bytes, np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    logger.warning("👁 [VisionTalk] Received unparseable frame — skipping.")
+                    continue
+                mode = data.get("mode", "NAVIGATE")
+                result = await asyncio.get_running_loop().run_in_executor(
+                    None, pipeline.process_frame, frame, mode
+                )
+                if result:
+                    await websocket.send_json(result)
+                continue
+
             action = data.get("action", "")
 
             if action == "set_mode":

@@ -28,7 +28,12 @@ function routeVoiceCommand(transcript) {
     // Confirmation — user said yes to "Shall I capture?"
     if (lower === 'yes' || lower === 'ok' || lower === 'sure' || lower === 'go ahead' ||
         lower === 'yeah' || lower === 'yep' || lower === 'do it') {
-      window.sendCommand?.({ type: 'command', action: 'find_capture' });
+      // triggerFindCapture() sends one frame then the find_capture action
+      if (window.triggerFindCapture) {
+        window.triggerFindCapture();
+      } else {
+        window.sendCommand?.({ type: 'command', action: 'find_capture' });
+      }
       window.showToast?.('Capturing...');
       return true;
     }

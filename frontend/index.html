@@ -73,15 +73,16 @@
   <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-label="Camera setup">
     <div class="settings-inner">
       <div class="settings-titlebar">
-        <h3 class="settings-title">📡 Camera Setup</h3>
+        <h3 class="settings-title">📷 Camera Setup</h3>
         <button id="btn-settings-close" class="settings-close" aria-label="Close settings">✕</button>
       </div>
-      <p class="settings-hint">Install <strong>IP Webcam</strong> on Android. Enter your phone's IP below.</p>
+      <p class="settings-hint">Uses your device's built-in camera via the browser.</p>
       <div class="ip-row">
-        <input id="ip-input" class="ip-input" type="text"
-               placeholder="192.168.1.x:8080"
-               autocomplete="off" inputmode="url" value="">
-        <button id="btn-apply-ip" class="apply-btn">Apply</button>
+        <select id="camera-facing" class="ip-input" style="cursor:pointer">
+          <option value="environment">Back camera (recommended)</option>
+          <option value="user">Front camera</option>
+        </select>
+        <button id="btn-apply-camera" class="apply-btn">Apply</button>
       </div>
       <div class="qr-section">
         <p class="settings-hint">Scan to open VisionTalk on your phone:</p>
@@ -95,16 +96,17 @@
 
     <!-- Camera: full-width hero -->
     <div class="camera-wrap" id="camera-wrap">
-      <img id="camera-feed" class="camera-feed" alt="Live camera feed from phone" draggable="false">
+      <video id="camera-feed" class="camera-feed" autoplay playsinline muted></video>
       <canvas id="overlay-canvas" class="overlay-canvas" aria-hidden="true"></canvas>
       <div id="camera-placeholder" class="camera-placeholder">
         <div class="placeholder-icon" aria-hidden="true">📷</div>
-        <p class="placeholder-text">Waiting for camera...</p>
-        <p class="placeholder-hint">Set phone IP in ⚙ settings above</p>
-        <button class="placeholder-open-settings" onclick="document.getElementById('btn-settings').click()">
-          Open Settings
-        </button>
+        <p class="placeholder-text">Camera not started</p>
+        <p class="placeholder-hint">Pick a mode to begin</p>
       </div>
+      <!-- Stop Camera button (visible while camera is active) -->
+      <button id="btn-stop-camera" class="btn-stop-camera hidden" aria-label="Stop camera">
+        ⏹ Stop Camera
+      </button>
       <!-- Status bar overlaid on camera bottom -->
       <div class="camera-status-bar">
         <span class="cam-status-dot" id="cam-mode-indicator"></span>

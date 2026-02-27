@@ -1,69 +1,106 @@
-// camera.js — MJPEG camera feed from Android IP Webcam app
-// Rules: Never getUserMedia(). Camera is always <img src="http://IP/video">
+// camera.js — getUserMedia browser camera (replaces IP Webcam MJPEG)
+// Exposes: startCamera(), stopCamera(), captureFrame(), sendFrameToBackend(mode), triggerFindCapture()
 
-const cameraFeed        = document.getElementById('camera-feed');
-const cameraPlaceholder = document.getElementById('camera-placeholder');
+(function () {
+  'use strict';
 
-const STORAGE_KEY = 'visiontalk_phone_ip';
-let errorRetryTimer = null;
+  const videoEl       = document.getElementById('camera-feed');
+  const placeholderEl = document.getElementById('camera-placeholder');
+  const stopBtn       = document.getElementById('btn-stop-camera');
 
-function applyCameraSource(ip) {
-  if (!ip) return;
-  ip = ip.trim();
-  localStorage.setItem(STORAGE_KEY, ip);
-  const url = ip.startsWith('http') ? ip : `http://${ip}`;
-  // Clear any pending retry
-  clearTimeout(errorRetryTimer);
-  cameraFeed.src = `${url}/video`;
-  cameraPlaceholder.classList.add('hidden');
-}
+  // Hidden canvas used for JPEG snapshot
+  const snapCanvas = document.createElement('canvas');
+  const snapCtx    = snapCanvas.getContext('2d');
 
-// Restore saved IP on load — show placeholder if no IP stored
-(function restoreIp() {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    document.getElementById('ip-input').value = saved;
-    applyCameraSource(saved);
-  } else {
-    // No IP saved — keep placeholder visible explicitly
-    cameraPlaceholder.classList.remove('hidden');
+  let _stream = null;   // active MediaStream
+
+  // ── startCamera ──────────────────────────────────────────────────
+  async function startCamera() {
+    if (_stream) return;   // already running
+
+    try {
+      const facing = window._preferredFacingMode || 'environment';
+      const constraints = {
+        video: {
+          facingMode: { ideal: facing },
+          width:  { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      };
+      _stream = await navigator.mediaDevices.getUserMedia(constraints);
+      videoEl.srcObject = _stream;
+      await videoEl.play();
+
+      if (placeholderEl) placeholderEl.classList.add('hidden');
+      if (stopBtn)       stopBtn.classList.remove('hidden');
+
+      window.showToast?.('Camera started');
+    } catch (err) {
+      console.error('[VisionTalk] Camera error:', err);
+      window.showToast?.(`Camera error: ${err.message || err.name}`);
+      if (placeholderEl) {
+        placeholderEl.classList.remove('hidden');
+        const hint = placeholderEl.querySelector('.placeholder-hint');
+        if (hint) hint.textContent = `Camera denied: ${err.name}`;
+      }
+    }
   }
+
+  // ── stopCamera ───────────────────────────────────────────────────
+  function stopCamera() {
+    if (!_stream) return;
+    _stream.getTracks().forEach(t => t.stop());
+    _stream = null;
+    videoEl.srcObject = null;
+    if (placeholderEl) placeholderEl.classList.remove('hidden');
+    if (stopBtn)       stopBtn.classList.add('hidden');
+    window.showToast?.('Camera stopped');
+  }
+
+  // ── captureFrame ─────────────────────────────────────────────────
+  // Returns a base64 data-URI JPEG string, or null if no stream active.
+  function captureFrame() {
+    if (!_stream || !videoEl.videoWidth) return null;
+    snapCanvas.width  = videoEl.videoWidth;
+    snapCanvas.height = videoEl.videoHeight;
+    snapCtx.drawImage(videoEl, 0, 0);
+    return snapCanvas.toDataURL('image/jpeg', 0.7);
+  }
+
+  // ── sendFrameToBackend ────────────────────────────────────────────
+  // Captures a JPEG and sends it over the existing WebSocket.
+  function sendFrameToBackend(mode) {
+    const dataUrl = captureFrame();
+    if (!dataUrl) return;
+    window.sendCommand?.({
+      type: 'frame',
+      mode: mode || window.currentMode || 'NAVIGATE',
+      data: dataUrl,
+    });
+  }
+
+  // ── triggerFindCapture ────────────────────────────────────────────
+  // Called by voice.js when user confirms capture in FIND mode.
+  // Sends one frame tagged as FIND then sends the find_capture action.
+  function triggerFindCapture() {
+    sendFrameToBackend('FIND');
+    window.sendCommand?.({ type: 'command', action: 'find_capture' });
+  }
+
+  // ── Stop button ──────────────────────────────────────────────────
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      stopCamera();
+      // Tell app to drop back to idle (no mode capture timers)
+      window.onModeChange?.('STOPPED');
+    });
+  }
+
+  // ── Expose globals ────────────────────────────────────────────────
+  window.startCamera        = startCamera;
+  window.stopCamera         = stopCamera;
+  window.captureFrame       = captureFrame;
+  window.sendFrameToBackend = sendFrameToBackend;
+  window.triggerFindCapture = triggerFindCapture;
 })();
-
-// Apply button
-document.getElementById('btn-apply-ip').addEventListener('click', () => {
-  const ip = document.getElementById('ip-input').value.trim();
-  if (ip) {
-    applyCameraSource(ip);
-    // Also tell the backend to switch its camera stream
-    const url = ip.startsWith('http') ? ip : `http://${ip}`;
-    window.sendCommand?.({ type: 'command', action: 'set_camera', source: `${url}/video` });
-    showToast('Camera source applied');
-    // Auto-close settings panel
-    document.getElementById('settings-panel').classList.add('hidden');
-  }
-});
-document.getElementById('ip-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('btn-apply-ip').click();
-});
-
-// Camera error — show placeholder, retry after 5 s
-cameraFeed.addEventListener('error', () => {
-  cameraPlaceholder.classList.remove('hidden');
-  // Retry by reloading src after a delay (MJPEG streams can drop transiently)
-  clearTimeout(errorRetryTimer);
-  const currentSrc = cameraFeed.src;
-  if (currentSrc && currentSrc !== window.location.href) {
-    errorRetryTimer = setTimeout(() => {
-      // Force browser to re-request by appending a cache-bust param
-      const base = currentSrc.split('?')[0];
-      cameraFeed.src = `${base}?t=${Date.now()}`;
-    }, 5000);
-  }
-});
-
-// Camera loaded — hide placeholder
-cameraFeed.addEventListener('load', () => {
-  clearTimeout(errorRetryTimer);
-  cameraPlaceholder.classList.add('hidden');
-});

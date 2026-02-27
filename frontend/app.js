@@ -30,6 +30,51 @@ let findCaptureState = 'idle';
 // sev1 = danger (red), sev2 = warning (orange), sev3 = success (green)
 const SEV_ICONS = ['', '🚨', '⚠️', '✅'];
 
+// ─── Mode-driven capture timers ───────────────────────────────────
+let captureTimer = null;
+
+function startNavigateCapture() {
+  stopCapture();
+  captureTimer = setInterval(() => {
+    if (window.currentMode !== 'NAVIGATE') return;
+    window.sendFrameToBackend?.('NAVIGATE');
+  }, 2000);
+}
+
+function startReadCapture() {
+  stopCapture();
+  captureTimer = setInterval(() => {
+    if (window.currentMode !== 'READ') return;
+    window.sendFrameToBackend?.('READ');
+  }, 3000);
+}
+
+function stopCapture() {
+  if (captureTimer) { clearInterval(captureTimer); captureTimer = null; }
+}
+
+// Called whenever the active mode changes (from applyModeState or pickMode)
+function onModeChange(newMode) {
+  stopCapture();
+  if (newMode === 'NAVIGATE') {
+    window.startCamera?.();
+    startNavigateCapture();
+  } else if (newMode === 'READ') {
+    window.startCamera?.();
+    startReadCapture();
+  } else if (newMode === 'FIND') {
+    window.startCamera?.();
+    // No auto-send in FIND — user triggers manually
+  } else if (newMode === 'ASK') {
+    window.startCamera?.();
+    // ASK: camera on but no auto-send; frame sent when user submits question
+  } else {
+    // Welcome / STOPPED / unknown — camera off
+    window.stopCamera?.();
+  }
+}
+window.onModeChange = onModeChange;
+
 // ─── Welcome Screen ───────────────────────────────────────────────
 (function initWelcome() {
   const overlay = document.getElementById('welcome-overlay');
@@ -43,6 +88,7 @@ const SEV_ICONS = ['', '🚨', '⚠️', '✅'];
     const backendMode = mode === 'OCR' ? 'READ' : mode;
     sendCommand({ type: 'command', action: 'set_mode', mode: backendMode });
     applyModeState({ current_mode: backendMode });
+    onModeChange(backendMode);
     showToast(`${backendMode} mode activated`);
   }
   window._welcomePickMode = pickMode;
@@ -256,6 +302,9 @@ function applyModeState(mode) {
     setFindCaptureBanner('idle');
     showToast('FIND — tap 📸 or say "capture" to capture scene');
   }
+
+  // Start/stop camera + capture timers based on new mode
+  onModeChange(current);
 }
 window.applyModeState = applyModeState;
 
@@ -307,7 +356,11 @@ document.getElementById('btn-find-capture')?.addEventListener('click', () => {
 });
 
 document.getElementById('btn-find-capture-yes')?.addEventListener('click', () => {
-  sendCommand({ type: 'command', action: 'find_capture' });
+  if (window.triggerFindCapture) {
+    window.triggerFindCapture();
+  } else {
+    window.sendCommand?.({ type: 'command', action: 'find_capture' });
+  }
   showToast('Capturing...');
 });
 
@@ -370,6 +423,18 @@ document.addEventListener('click', (e) => {
       e.target.id !== 'btn-settings') {
     hidePanel(settingsPanel);
   }
+});
+
+// Camera facing-mode selector
+document.getElementById('btn-apply-camera')?.addEventListener('click', () => {
+  const facing = document.getElementById('camera-facing')?.value || 'environment';
+  // Restart camera with new facing mode
+  window.stopCamera?.();
+  // Override facingMode by passing via a temporary global then re-starting
+  window._preferredFacingMode = facing;
+  window.startCamera?.();
+  hidePanel(settingsPanel);
+  showToast(`Camera switched to ${facing === 'environment' ? 'back' : 'front'}`);
 });
 
 // ─── Demo Presentation Mode ────────────────────────────────────────
