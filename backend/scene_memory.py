@@ -1,7 +1,21 @@
-import time, threading, logging
-from collections import deque
-from dataclasses import dataclass, field
+"""
+scene_memory.py — Scene state tracking for VisionTalk non-navigate modes.
+
+In NAVIGATE mode, object state is managed by tracker.py (per-track ID with
+full temporal stability). This module is retained for:
+  - ASK / READ / FIND modes: snapshot and scene-diff queries.
+  - WS handler: take_snapshot() / get_scene_diff() surface API.
+  - YOLOWorld dedup in NAVIGATE (is_new_by_key TTL gate).
+
+Approach detection has been removed — velocity is now computed by tracker.py.
+"""
+
+import time
+import threading
+import logging
+from dataclasses import dataclass
 from typing import List
+
 from backend.spatial import SpatialResult
 
 logger = logging.getLogger(__name__)
@@ -9,86 +23,42 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SceneEntry:
-    result:        SpatialResult
-    first_seen:    float
-    last_seen:     float
-    announced:     bool
-    last_level:    int
-    # NEW: track last 3 distance_levels to detect approaching movement
-    level_history: deque = field(default_factory=lambda: deque(maxlen=3))
-    approach_warned: bool = False   # don't repeat approach alert
+    result:     SpatialResult
+    first_seen: float
+    last_seen:  float
 
 
 class SceneMemory:
-    TTL = 12.0   # seconds before a missing object is evicted from scene memory
+    TTL = 12.0   # seconds before a missing object is evicted from memory
 
     def __init__(self):
-        self._entries: dict[str, SceneEntry] = {}
-        self._lock = threading.Lock()
+        self._entries:  dict[str, SceneEntry] = {}
+        self._lock:     threading.Lock = threading.Lock()
         self._announced: dict[str, float] = {}
-        self._ttl: float = 12.0  # seconds between repeated announcements for same object
+        self._ttl: float = 12.0  # dedup TTL for is_new_by_key
 
+    # ── Called by pipeline for non-navigate modes ─────────────────
     def update(self, results: List[SpatialResult]):
+        """Update scene entries from a list of SpatialResult (non-navigate)."""
         now = time.time()
         with self._lock:
             for r in results:
                 k = r.key
                 if k in self._entries:
-                    e = self._entries[k]
-                    e.last_seen = now
-                    e.result    = r
-                    e.level_history.append(r.distance_level)
-                    if abs(r.distance_level - e.last_level) >= 1:
-                        e.announced      = False
-                        e.approach_warned = False   # reset on level change
-                        e.last_level     = r.distance_level
+                    self._entries[k].last_seen = now
+                    self._entries[k].result    = r
                 else:
-                    entry = SceneEntry(
-                        result=r, first_seen=now, last_seen=now,
-                        announced=False, last_level=r.distance_level,
+                    self._entries[k] = SceneEntry(
+                        result=r, first_seen=now, last_seen=now
                     )
-                    entry.level_history.append(r.distance_level)
-                    self._entries[k] = entry
-
-            # SAFE expire: build list first, THEN delete
-            expired = [k for k, e in self._entries.items()
-                       if now - e.last_seen > self.TTL]
-            for k in expired:
+            # Evict stale entries
+            stale = [k for k, e in self._entries.items()
+                     if now - e.last_seen > self.TTL]
+            for k in stale:
                 del self._entries[k]
 
-    def get_new_alerts(self) -> List[SpatialResult]:
-        with self._lock:
-            return [e.result for e in self._entries.values() if not e.announced]
-
-    def get_approaching(self) -> List[SpatialResult]:
-        """
-        NEW FEATURE — Approaching Alert.
-        Returns objects where distance_level decreased 2 steps in last 3 frames.
-        Pattern: [4,3,2] or [3,2,1] = object is approaching.
-        Only fires if object is now at level <= 2 (nearby or very close).
-        """
-        approaching = []
-        with self._lock:
-            for e in self._entries.values():
-                h = list(e.level_history)
-                if len(h) >= 3:
-                    # strictly decreasing AND now close
-                    if h[-1] < h[-2] < h[-3] and h[-1] <= 2 and not e.approach_warned:
-                        approaching.append(e.result)
-        return approaching
-
-    def mark_approach_warned(self, key: str):
-        with self._lock:
-            if key in self._entries:
-                self._entries[key].approach_warned = True
-
-    def mark_announced(self, key: str):
-        with self._lock:
-            if key in self._entries:
-                self._entries[key].announced = True
-
     def get_snapshot(self) -> dict:
-        """Returns a frozen copy of current scene for comparison."""
+        """Return a frozen {key: class_name} dict for scene-diff queries."""
         with self._lock:
             return {k: e.result.class_name for k, e in self._entries.items()}
 
@@ -96,17 +66,22 @@ class SceneMemory:
         with self._lock:
             self._entries.clear()
 
+    # ── TTL dedup gate (used by YOLOWorld extra detections) ───────
     def is_new_by_key(self, key: str) -> bool:
-        """Returns True if this key hasn't been announced recently (TTL dedup)."""
+        """
+        Returns True if *key* has not been announced within the dedup TTL.
+        Side-effect: records the announcement timestamp if returning True.
+        """
         now = time.time()
-        if key in self._announced and now - self._announced[key] < self._ttl:
-            return False
-        self._announced[key] = now
-        # FIX #11: prune stale entries to prevent unbounded dict growth
-        prune_before = now - self._ttl * 2
-        stale = [k for k, t in self._announced.items() if t < prune_before]
-        for k in stale:
-            del self._announced[k]
+        with self._lock:
+            if key in self._announced and now - self._announced[key] < self._ttl:
+                return False
+            self._announced[key] = now
+            # Prune stale entries (prevent unbounded growth)
+            prune_before = now - self._ttl * 2
+            stale = [k for k, t in self._announced.items() if t < prune_before]
+            for k in stale:
+                del self._announced[k]
         return True
 
 

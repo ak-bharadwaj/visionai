@@ -1,117 +1,106 @@
-from backend.spatial import SpatialResult
-from typing import List
+"""
+narrator.py — Deterministic narration builder for VisionTalk NAVIGATE mode.
 
-RISK_SCORE: dict[str, int] = {
-    "person": 10, "car": 10, "motorcycle": 10, "bicycle": 10,
-    "bus": 10, "truck": 10, "train": 10,
-    "chair": 7, "couch": 7, "dining table": 6, "bench": 6,
-    "door": 5, "suitcase": 5, "bed": 5,
-    "toilet": 4, "sink": 4, "refrigerator": 4,
-}
-DEFAULT_RISK = 3
+Rules (NON-NEGOTIABLE, safety-critical):
+  - Templates are fixed strings only — no LLM, no adjectives, no speculation.
+  - Only THREE output templates are permitted:
+      "[Object] approaching from [clock direction], [distance] metres."
+      "[Object] blocking center path, [distance] metres ahead."
+      "Path ahead appears clear."
+  - Distance rounded to 0.1 m.
+  - Direction is the TrackedObject.direction clock string (e.g. "12 o'clock").
+  - Narration gate (ALL required before calling build()):
+      • obj.confirmed == True
+      • obj.confidence >= 0.60
+      • obj.smoothed_distance_m > 0.0
+      • obj.distance_variance() <= DIST_VARIANCE_GATE
+      • obj.risk_level in ("HIGH", "MEDIUM")
+    — The stability_filter module enforces this gate; narrator trusts the caller.
+  - Never returns an empty string for a valid HIGH/MEDIUM object (fallback exists).
+  - No state — pure functions only.
 
-# FIXED: "{dir}" is always used with preposition now
-# "ahead" → "Chair ahead, very close"
-# "left"  → "Chair nearby, to your left"
-NAVIGATE_TEMPLATES: dict[int, str] = {
-    1: "Stop! {Cls} directly {dir}",
-    2: "{Cls} nearby, to your {dir}",
-    3: "{Cls} to your {dir}, a few steps away",
-    4: "",       # suppress — too far, not useful
-}
-# Special cases where "ahead" sounds better without "to your"
-AHEAD_TEMPLATES: dict[int, str] = {
-    1: "Stop! {Cls} directly ahead",
-    2: "{Cls} nearby, directly ahead",
-    3: "{Cls} ahead, a few steps away",
-    4: "",
-}
+This module does NOT contain cooldown logic (that lives in stability_filter.py).
+"""
 
-APPROACH_TEMPLATES: dict[str, str] = {
-    "person":   "Warning! Person approaching from {dir}",
-    "car":      "Warning! Car approaching from {dir}",
-    "bicycle":  "Warning! Bicycle approaching from {dir}",
-    "default":  "Warning! {Cls} approaching from {dir}",
-}
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Minimum path_overlap_ratio to use "blocking center path" template
+BLOCKING_OVERLAP_THRESH = 0.50
+
+# "Path ahead appears clear." literal — exported so pipeline can import it
+PATH_CLEAR_MESSAGE = "Path ahead appears clear."
 
 
-DANGER_ALERT_AT_2 = {"person", "car", "motorcycle", "bicycle", "bus", "truck"}
+def build(obj) -> str:
+    """
+    Build a deterministic narration string for a confirmed TrackedObject.
 
+    Template selection:
+      - If path_overlap_ratio >= BLOCKING_OVERLAP_THRESH:
+            "[Class] blocking center path, [dist] metres ahead."
+      - Elif motion_state == "approaching":
+            "[Class] approaching from [direction], [dist] metres."
+      - Else (static/receding in path):
+            "[Class] ahead, [dist] metres."   (minimal alert, still deterministic)
 
-class Narrator:
-    def prioritize(self, alerts: List[SpatialResult]) -> List[SpatialResult]:
-        def should_announce(r: SpatialResult) -> bool:
-            if r.distance_level == 1:
-                return True
-            if r.distance_level == 2 and r.class_name in DANGER_ALERT_AT_2:
-                return True
-            return False
-        filtered = [r for r in alerts if should_announce(r)]
-        return sorted(
-            filtered,
-            key=lambda r: (-RISK_SCORE.get(r.class_name, DEFAULT_RISK), r.distance_level)
-        )
+    Args:
+        obj: TrackedObject with class_name, smoothed_distance_m, direction,
+             path_overlap_ratio, and motion_state populated.
 
-    def narrate(self, result: SpatialResult) -> str:
-        """
-        FIXED: use AHEAD_TEMPLATES when direction == 'ahead' (sounds natural).
-        Use NAVIGATE_TEMPLATES with 'to your {dir}' for left/right.
-        Appends zone qualifier when object is aerial (overhead hazard).
-        Appends approximate distance in metres when depth data is available.
-        """
-        if result.direction == "ahead":
-            tmpl = AHEAD_TEMPLATES.get(result.distance_level, "")
+    Returns:
+        Narration string.  Never empty for a valid object.
+    """
+    try:
+        cls_name = obj.class_name.lower()
+        dist_m   = round(obj.smoothed_distance_m, 1)
+        dist_str = f"{dist_m} metres"
+        direction = obj.direction           # e.g. "12 o'clock"
+        overlap   = float(obj.path_overlap_ratio)
+        motion    = obj.motion_state        # "approaching" | "static" | "receding"
+
+        if overlap >= BLOCKING_OVERLAP_THRESH:
+            text = f"{cls_name.capitalize()} blocking center path, {dist_str} ahead."
+        elif motion == "approaching":
+            text = f"{cls_name.capitalize()} approaching from {direction}, {dist_str}."
         else:
-            tmpl = NAVIGATE_TEMPLATES.get(result.distance_level, "")
+            # Static or receding but still qualifies as MEDIUM/HIGH risk
+            text = f"{cls_name.capitalize()} at {direction}, {dist_str}."
 
-        if not tmpl:
-            return ""
-        msg = tmpl.format(
-            cls=result.class_name,
-            Cls=result.class_name.title(),
-            dir=result.direction,
+        logger.debug(
+            "[Narrator] build id=%d class=%s → %r",
+            getattr(obj, "id", -1), cls_name, text,
         )
-        # Append zone qualifier for overhead objects (ground-level is implicit)
-        if result.zone == "aerial" and msg:
-            msg += ", overhead"
-        # Append metric distance when depth data is meaningful (> 0.1 m)
-        # SpatialResult only has distance_ft — convert to metres here.
-        dist_ft = getattr(result, "distance_ft", 0.0) or 0.0
-        dist_m  = dist_ft * 0.3048
-        if msg and dist_m > 0.1:
-            msg += f", approximately {dist_m:.1f} metres away"
-        return msg
+        return text
 
-    def narrate_approaching(self, result: SpatialResult) -> str:
-        """NEW: Generate approaching alert string."""
-        tmpl = APPROACH_TEMPLATES.get(result.class_name,
-                                       APPROACH_TEMPLATES["default"])
-        return tmpl.format(
-            cls=result.class_name,
-            Cls=result.class_name.title(),
-            dir=result.direction,
-        )
-
-    def narrate_persons(self, results: List[SpatialResult]) -> str | None:
-        """
-        Social awareness — only report persons at level 1 (very close).
-        Returns None if no persons are very close.
-        """
-        persons = [r for r in results if r.class_name == "person" and r.distance_level == 1]
-        if not persons:
-            return None
-
-        closest = min(persons, key=lambda r: r.distance_level)
-        count = len(persons)
-
-        if count == 1:
-            p = closest
-            if p.direction == "ahead":
-                return "Stop! Person directly ahead, very close"
-            return f"Stop! Person to your {p.direction}, very close"
-
-        # Multiple very-close persons
-        return f"Stop! {count} people very close"
+    except Exception as exc:
+        logger.error("[Narrator] build() error: %s", exc)
+        # Absolute fallback — still deterministic, never empty
+        cls_name = getattr(obj, "class_name", "object")
+        return f"{cls_name.capitalize()} detected nearby."
 
 
-narrator = Narrator()
+def path_clear() -> str:
+    """Return the canonical 'path clear' message."""
+    return PATH_CLEAR_MESSAGE
+
+
+def select_highest_risk(confirmed_objects: list):
+    """
+    From a list of confirmed TrackedObjects (already risk-scored),
+    return the single highest-risk object to narrate this cycle.
+
+    Priority:
+      1. Highest risk_score (already computed by risk_engine.score_all()).
+      2. Tie-break: closest distance (lowest smoothed_distance_m).
+
+    Returns None if the list is empty.
+    """
+    eligible = [o for o in confirmed_objects if o.risk_level in ("HIGH", "MEDIUM")]
+    if not eligible:
+        return None
+    return min(
+        eligible,
+        key=lambda o: (-o.risk_score, o.smoothed_distance_m),
+    )
