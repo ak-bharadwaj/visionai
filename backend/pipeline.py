@@ -25,7 +25,7 @@ Design constraints (safety-critical):
     ASK / READ / FIND).
   - No probabilistic YOLOWorld narrations without tracker confirmation.
   - No "scene caption" thread in NAVIGATE mode.
-  - Detection cadence: every DETECT_EVERY_N frames (default 4).
+  - Detection cadence: every DETECT_EVERY_N frames (default 3).
   - Tracking: every frame.
   - Depth only for confirmed tracked objects.
   - Failsafe: if system unstable > 10 frames → "Scene unstable. Please move slowly."
@@ -68,7 +68,7 @@ from backend.temporal_fusion import temporal_fusion
 logger = logging.getLogger(__name__)
 
 # ── Cadence ──────────────────────────────────────────────────────────────────
-DETECT_EVERY_N       = 4     # run YOLO only every N frames (tracking runs every frame)
+DETECT_EVERY_N       = 3     # run YOLO only every N frames (tracking runs every frame)
 WORLD_DETECT_EVERY_N = 10    # YOLOWorld is expensive — run less frequently
 
 # ── GPU detection (best-effort; falls back to CPU safely) ────────────────────

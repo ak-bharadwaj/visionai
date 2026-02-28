@@ -2,7 +2,7 @@
 stt.py — Continuous Whisper STT listener for VisionTalk.
 
 Architecture:
-  - faster-whisper (tiny, int8, CPU) transcribes 3-second mic chunks.
+  - faster-whisper (tiny, int8, CPU) transcribes 2-second mic chunks.
   - Deterministic command classifier maps transcript → action dict.
   - Results are put on a thread-safe queue consumed by main.py.
   - Graceful fallback if mic or faster-whisper are unavailable.
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16000          # Whisper expects 16 kHz
-CHUNK_SECONDS  = 3              # record N seconds then transcribe
+CHUNK_SECONDS  = 2              # record N seconds then transcribe
 SILENCE_THRESH = 0.005          # RMS below this → skip transcription (silence)
 MODEL_SIZE     = "tiny"         # tiny is fast enough on CPU (<150 ms per chunk)
 LANGUAGE       = "en"           # lock to English — faster, less ambiguity

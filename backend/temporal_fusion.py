@@ -45,8 +45,8 @@ Parameters (tuned for 10–15 FPS YOLO cadence)
 ----------------------------------------------
 FUSION_HISTORY      = 5     # frames of raw detection history kept
 FUSION_IOU_MATCH    = 0.40  # IoU threshold to consider same object
-FUSION_MIN_FRAMES   = 2     # minimum seen-frames to pass to tracker
-FUSION_STRONG_CONF  = 0.65  # single-frame bypass threshold (fast hazards)
+FUSION_MIN_FRAMES   = 1     # minimum seen-frames to pass to tracker
+FUSION_STRONG_CONF  = 0.45  # single-frame bypass threshold (fast hazards)
 FUSION_BOX_ALPHA    = 0.6   # EMA weight for box smoothing (current frame)
 
 Design constraints
@@ -75,8 +75,8 @@ logger = logging.getLogger(__name__)
 
 FUSION_HISTORY:     int   = int(os.getenv("FUSION_HISTORY",    "5"))
 FUSION_IOU_MATCH:   float = float(os.getenv("FUSION_IOU_MATCH", "0.40"))
-FUSION_MIN_FRAMES:  int   = int(os.getenv("FUSION_MIN_FRAMES", "2"))
-FUSION_STRONG_CONF: float = float(os.getenv("FUSION_STRONG_CONF", "0.65"))
+FUSION_MIN_FRAMES:  int   = int(os.getenv("FUSION_MIN_FRAMES", "1"))
+FUSION_STRONG_CONF: float = float(os.getenv("FUSION_STRONG_CONF", "0.45"))
 FUSION_BOX_ALPHA:   float = float(os.getenv("FUSION_BOX_ALPHA",  "0.6"))
 
 

@@ -1,10 +1,11 @@
 """
-detector.py — YOLOv8m object detector for VisionTalk.
+detector.py — YOLOv8s object detector for VisionTalk.
 
 Changes from original:
-  - Model upgraded to YOLOv8m (higher accuracy than s/n).
-  - Hard confidence gate raised to 0.60 (was 0.35).
-    Fewer false positives. Safety-critical systems prefer precision over recall.
+  - Model changed to YOLOv8s (faster than m, guaranteed available, lighter for cloud).
+  - Hard confidence gate lowered to 0.35 (was 0.60).
+    More real-world detections pass through (person 0.40-0.75, chair 0.30-0.60).
+  - Expanded ALLOWED_CLASSES whitelist to include critical indoor obstacles.
   - Input resize always 640 (YOLOv8 native training resolution).
   - NMS IOU threshold 0.50 per spec (reduces duplicate boxes on same object).
   - Error-safe: any model exception returns [] instead of crashing the pipeline.
@@ -42,14 +43,20 @@ DEBUG_DETECTIONS: bool = os.getenv("DEBUG_DETECTIONS", "0").strip() == "1"
 DEBUG_RAW_CONF_MIN: float = float(os.getenv("DEBUG_RAW_CONF_MIN", "0.10"))
 
 MODEL_DIR  = Path(__file__).parent.parent / "models"
-MODEL_PATH = MODEL_DIR / "yolov8m.pt"
+MODEL_PATH = MODEL_DIR / "yolov8s.pt"
 
-# ── Allowed detection classes (spec-exact: 12 navigation-relevant classes) ────
+# ── Allowed detection classes (expanded: navigation + critical indoor obstacles) ──
 # Only these classes pass through in NAVIGATE mode.
 # ASK/FIND mode uses apply_whitelist=False for maximum recall.
 ALLOWED_CLASSES: frozenset = frozenset({
+    # Original 12 navigation classes
     "person", "chair", "table", "car", "bus", "truck",
     "bicycle", "motorcycle", "door", "stairs", "wall", "pole",
+    # Critical indoor obstacles
+    "couch", "bed", "toilet", "sink", "tv", "laptop",
+    "bottle", "cup", "backpack", "bench",
+    # Outdoor safety
+    "fire hydrant", "stop sign",
 })
 
 # All 80 COCO classes in exact order
@@ -100,34 +107,34 @@ class ObjectDetector:
     # 640 is the native YOLOv8s training resolution.
     SIZE = 640
     # Hard confidence gate. Objects below this NEVER reach downstream stages.
-    # 0.60 → higher precision, fewer false narrations. Correct for safety-critical use.
-    CONF = float(os.getenv("CONF_THRESHOLD", "0.60"))
+    # 0.35 → catches real-world detections (person 0.40-0.75, chair 0.30-0.60).
+    CONF = float(os.getenv("CONF_THRESHOLD", "0.35"))
     # NMS IOU — per spec: 0.50 to suppress duplicate boxes.
     IOU  = float(os.getenv("IOU_THRESHOLD",  "0.50"))
 
     def __init__(self):
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         from ultralytics import YOLO
-        model_path = str(MODEL_PATH) if MODEL_PATH.exists() else "yolov8m.pt"
+        model_path = str(MODEL_PATH) if MODEL_PATH.exists() else "yolov8s.pt"
         self._model = YOLO(model_path)
         # Cache downloaded weights to models/ for future offline starts
         if not MODEL_PATH.exists():
             import shutil
-            downloaded = Path("yolov8m.pt")
+            downloaded = Path("yolov8s.pt")
             if downloaded.exists():
                 shutil.copy(downloaded, MODEL_PATH)
         self._model.overrides["verbose"] = False
         logger.info(
-            "Detector ready: YOLOv8m conf=%.2f iou=%.2f size=%d",
+            "Detector ready: YOLOv8s conf=%.2f iou=%.2f size=%d",
             self.CONF, self.IOU, self.SIZE,
         )
 
     def detect(self, frame: np.ndarray, conf: float | None = None,
                apply_whitelist: bool = True) -> List[Detection]:
         """
-        Run YOLOv8m on frame. Returns list of Detection objects.
+        Run YOLOv8s on frame. Returns list of Detection objects.
         Only detections with confidence >= conf (default: self.CONF) are returned.
-        Pass a lower conf (e.g. 0.35) for ASK/FIND query mode to improve recall.
+        Pass a lower conf (e.g. 0.25) for ASK/FIND query mode to improve recall.
         Set apply_whitelist=False in ASK/FIND mode to allow all 80 COCO classes.
         Returns [] on any error — never raises.
 

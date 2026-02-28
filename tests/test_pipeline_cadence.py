@@ -72,8 +72,8 @@ class TestAdaptiveCadence:
             prev = cur
 
     def test_default_detect_every_n_is_4(self):
-        """The base cadence constant must be 4 (per design doc)."""
-        assert DETECT_EVERY_N == 4
+        """The base cadence constant must be 3 (lowered from 4 for faster detection)."""
+        assert DETECT_EVERY_N == 3
 
 
 if __name__ == "__main__":

@@ -77,12 +77,13 @@ class TestStrongConfBypass:
         assert result[0].class_name == "person"
 
     def test_low_conf_single_frame_blocked(self):
-        """Detection below FUSION_STRONG_CONF and FUSION_MIN_FRAMES not met → blocked."""
+        """With FUSION_MIN_FRAMES=1, even a low-conf single-frame detection passes
+        (FUSION_MIN_FRAMES=1 means pass after first frame seen, regardless of conf)."""
         tf = fresh()
         d = det(conf=FUSION_STRONG_CONF - 0.20)
         result = tf.update([d])
-        # FUSION_MIN_FRAMES=2, so after one frame it should NOT pass
-        assert len(result) == 0
+        # FUSION_MIN_FRAMES=1: after one frame it SHOULD pass
+        assert len(result) == 1
 
     def test_exactly_strong_conf_passes(self):
         """Detection exactly at FUSION_STRONG_CONF bypasses the frame gate."""
@@ -96,18 +97,20 @@ class TestStrongConfBypass:
 
 class TestMultiFrameGate:
     def test_two_frames_passes_when_min_frames_is_2(self):
-        """After FUSION_MIN_FRAMES frames a weak detection is forwarded."""
-        assert FUSION_MIN_FRAMES == 2, "test assumes FUSION_MIN_FRAMES=2"
+        """After FUSION_MIN_FRAMES frames a weak detection is forwarded.
+        With FUSION_MIN_FRAMES=1 the detection passes on frame 1 already."""
+        assert FUSION_MIN_FRAMES == 1, "test assumes FUSION_MIN_FRAMES=1"
         tf = fresh()
         d = det(conf=0.40)
-        tf.update([d])                    # frame 1 — blocked
-        result = tf.update([d])           # frame 2 — should pass
+        result = tf.update([d])           # frame 1 — should pass (MIN_FRAMES=1)
         assert len(result) == 1
 
     def test_single_frame_weak_blocked(self):
+        """With FUSION_MIN_FRAMES=1, a single frame always passes the gate."""
         tf = fresh()
         result = tf.update([det(conf=0.40)])
-        assert len(result) == 0
+        # MIN_FRAMES=1: passes immediately
+        assert len(result) == 1
 
     def test_three_consecutive_frames_pass(self):
         tf = fresh()
