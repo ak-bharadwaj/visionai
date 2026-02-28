@@ -49,9 +49,9 @@ FPS_MIN_CPU          = 15.0     # minimum acceptable FPS on CPU
 FAILSAFE_COOLDOWN    = 5.0      # seconds between repeated failsafe messages
 
 # ── Narration gate constants ─────────────────────────────────────────────────
-CONF_GATE            = 0.60
-DIST_VARIANCE_GATE   = 0.06     # above this → depth is too noisy to report distance
-NARRATION_COOLDOWN   = 4.0      # seconds between non-critical narrations
+CONF_GATE            = 0.55     # relaxed from 0.60 — avoids over-silencing on CPU
+DIST_VARIANCE_GATE   = 0.12     # relaxed from 0.06 — MiDaS CPU noise is higher
+NARRATION_COOLDOWN   = 2.5      # reduced from 4.0s — faster hazard updates
 HIGH_RISK_COOLDOWN   = 0.0      # HIGH risk always interrupts cooldown
 
 FAILSAFE_MESSAGE = "Scene unstable. Please move slowly."
@@ -65,7 +65,7 @@ PATH_CLEAR_COOLDOWN = 8.0    # seconds between "path clear" announcements
 # HIGH risk is NEVER deduplicated — safety always takes priority.
 # The cache entry expires after DEDUP_CACHE_TTL seconds unconditionally,
 # so a long-static object eventually gets re-narrated.
-DEDUP_CACHE_TTL = 30.0   # seconds before a dedup cache entry expires
+DEDUP_CACHE_TTL = 12.0   # reduced from 30s — re-narrate sooner when hazard persists
 
 
 def _narration_key(obj) -> str:

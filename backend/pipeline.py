@@ -110,6 +110,8 @@ class PipelineRunner:
         # READ mode
         self._last_read_texts: list[str] = []
         self._no_text_count: int = 0
+        self._last_read_spoken_t: float = 0.0    # time of last OCR TTS emission
+        self._last_read_spoken_key: str = ""     # fingerprint of last spoken text
 
         # MiDaS depth — background thread, stale-ok pattern
         self._depth_input:  queue.Queue = queue.Queue(maxsize=1)
@@ -182,10 +184,41 @@ class PipelineRunner:
         current: dict[str, int] = {}
         for t in live_tracks:
             current[t.class_name] = current.get(t.class_name, 0) + 1
+            
+        # Fallback: if no confirmed tracks, run a fresh YOLO pass on the
+        # last cached frame to capture at least the currently visible objects
+        # so we don't accidentally assume the scene is completely empty.
+        if not current and self._last_frame is not None and self._detector is not None:
+            try:
+                fresh_dets = self._detector.detect(self._last_frame, conf=0.35, apply_whitelist=False)
+                for d in fresh_dets:
+                    name = getattr(d, "class_name", "object")
+                    current[name] = current.get(name, 0) + 1
+                logger.info("[Pipeline] get_scene_diff: used fresh YOLO fallback — %d classes", len(current))
+            except Exception as exc:
+                logger.warning("[Pipeline] get_scene_diff YOLO fallback failed: %s", exc)
 
-        appeared    = [cls for cls in current if cls not in snap]
-        disappeared = [cls for cls in snap     if cls not in current]
         parts = []
+        # Check for new items or items that increased in count
+        appeared = []
+        for cls, curr_count in current.items():
+            snap_count = snap.get(cls, 0)
+            if curr_count > snap_count:
+                if snap_count == 0:
+                    appeared.append(f"{curr_count} {cls}")
+                else:
+                    appeared.append(f"more {cls} (now {curr_count})")
+                    
+        # Check for items that disappeared or decreased in count
+        disappeared = []
+        for cls, snap_count in snap.items():
+            curr_count = current.get(cls, 0)
+            if curr_count < snap_count:
+                if curr_count == 0:
+                    disappeared.append(cls)
+                else:
+                    disappeared.append(f"fewer {cls} (now {curr_count})")
+
         if appeared:    parts.append(f"New: {', '.join(appeared)}")
         if disappeared: parts.append(f"Gone: {', '.join(disappeared)}")
         return ". ".join(parts) if parts else "Scene unchanged since snapshot."
@@ -604,9 +637,13 @@ class PipelineRunner:
                 spoken_text = narrator_path_clear()
                 tts_engine.speak(spoken_text, priority=False)
 
-        return self._navigate_payload(w, h, spoken_text, confirmed, severity)
+        # Compute routing_text once and pass it to payload (avoids double call)
+        _routing_text_for_payload = narrator_build_routing(confirmed, frame_w=w)
+        return self._navigate_payload(w, h, spoken_text, confirmed, severity,
+                                      routing_text=_routing_text_for_payload)
 
-    def _navigate_payload(self, w, h, text, confirmed, severity) -> dict:
+    def _navigate_payload(self, w, h, text, confirmed, severity,
+                          routing_text: "str | None" = None) -> dict:
         # Include all currently tracked objects in the overlay payload so the
         # frontend can draw bounding boxes even for tentative (unconfirmed)
         # objects.  Narration / TTS decisions remain gated on `confirmed` only.
@@ -615,9 +652,8 @@ class PipelineRunner:
             _nav_state = self._nav_state
             _nav_dest  = self._nav_destination
 
-        # Derive a simple directional enum from the routing narration text
-        # so the frontend HUD can render a Google-Maps-style turn arrow.
-        _routing_text = narrator_build_routing(confirmed, frame_w=w)
+        # Use pre-computed routing_text if provided (avoids a second call)
+        _routing_text = routing_text if routing_text is not None else narrator_build_routing(confirmed, frame_w=w)
         if _routing_text:
             _rt_lower = _routing_text.lower()
             if "turn right" in _rt_lower:
@@ -688,15 +724,22 @@ class PipelineRunner:
             if len(raw) > 200:
                 raw = raw[:197] + "..."
             read_msg = "Reading: " + raw
-            tts_engine.speak(read_msg)
+            # Only speak if text changed OR 3 s cooldown passed (avoids TTS flood)
+            _now = time.time()
+            _key = raw[:80]
+            if _key != self._last_read_spoken_key or (_now - self._last_read_spoken_t) >= 3.0:
+                tts_engine.speak(read_msg)
+                self._last_read_spoken_t   = _now
+                self._last_read_spoken_key = _key
         else:
             self._no_text_count += 1
-            if self._no_text_count % 5 == 1:
+            read_msg = "No text found. Move closer or adjust angle."
+            # Speak "no text" much less often — only every 10th no-text frame
+            if self._no_text_count % 10 == 1:
                 tts_engine.speak(
                     "No text in view. Try moving closer or improving the lighting.",
                     priority=False,
                 )
-            read_msg = "No text found. Move closer or adjust angle."
 
         return {
             "type":       "reading",

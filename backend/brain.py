@@ -215,7 +215,7 @@ class Brain:
             frame_w = frame.shape[1] if frame is not None else 640
             # Extract target name from question for LLaVA grounding
             _stop = {"where", "is", "the", "a", "an", "can", "you", "see", "find",
-                     "locate", "look", "for", "show", "me", "there", "do", "my",
+                     "locate", "look", "for", "show", "me", "there", "do",
                      "please", "i", "want", "to", "need", "are"}
             _target_words = [w.strip("?.,!") for w in q_lower.split()
                              if w.strip("?.,!") and w.strip("?.,!") not in _stop]
@@ -375,8 +375,8 @@ class Brain:
         "cup":       ["cup", "mug"],
         "mug":       ["mug", "cup"],
         "bottle":    ["bottle", "water bottle"],
-        "keys":      ["keys", "key"],
-        "key":       ["key", "keys"],
+        "keys":      ["keys", "key", "keychain"],
+        "key":       ["key", "keys", "keychain"],
         "wallet":    ["wallet", "purse"],
         "purse":     ["purse", "wallet", "handbag"],
         "bike":      ["bicycle", "bike"],
@@ -418,7 +418,7 @@ class Brain:
         # Strip common stop words and find candidate target words
         stop_words = {
             "where", "is", "the", "a", "an", "can", "you", "see", "find",
-            "locate", "look", "for", "show", "me", "there", "do", "my",
+            "locate", "look", "for", "show", "me", "there", "do",
             "please", "i", "want", "to", "need", "are",
         }
         words = [w.strip("?.,!") for w in q_lower.split()]
@@ -591,7 +591,7 @@ class Brain:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=6) as resp:
                 data   = json.loads(resp.read().decode("utf-8"))
                 answer = data.get("response", "").strip()
                 if answer:
@@ -719,7 +719,7 @@ class Brain:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data   = json.loads(resp.read().decode("utf-8"))
                 answer = data.get("response", "").strip()
                 if answer:
@@ -819,7 +819,7 @@ class Brain:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=6) as resp:
                 data   = json.loads(resp.read().decode("utf-8"))
                 answer = data.get("response", "").strip()
                 if answer:
