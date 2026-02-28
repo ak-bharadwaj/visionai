@@ -235,12 +235,31 @@ class Brain:
                 self._history_append(question, result, _gen)
                 return result
 
-        # ── 1. Color — OpenCV HSV (fast, no LLM) ─────────────────────────────
+        # ── 1. Color — Gemini AI or OpenCV (accuracy priority) ─────────────────────────────
         if any(k in q_lower for k in COLOR_KEYWORDS):
             logger.info("[Brain] route=color q=%r", question[:80])
             if frame is not None:
-                from backend.color_sense import answer_color_question
-                result = answer_color_question(frame, detections)
+                try:
+                    # Try Gemini first for AI-powered accuracy (when keys configured)
+                    from backend.gemini_client import verify_color, is_available
+                    if is_available():
+                        gemini_color = verify_color(frame)
+                        if gemini_color:
+                            # Clean Gemini response - may include extra words
+                            color_clean = gemini_color.strip().rstrip('.').lower()
+                            if len(color_clean) > 50:  # Too long, take first phrase
+                                color_clean = color_clean.split('.')[0].split(',')[0].strip()
+                            result = f"The person's clothing appears to be {color_clean}."
+                            logger.info("[Brain] color (Gemini AI): %r", result)
+                            self._history_append(question, result, _gen)
+                            return result
+                    # Fallback: OpenCV color detection
+                    from backend.color_sense import answer_color_question
+                    result = answer_color_question(frame, detections)
+                    logger.info("[Brain] color result: %r", result)
+                except Exception as e:
+                    logger.error("[Brain] color detection error: %s", e)
+                    result = "I can't determine the color right now. Please try again."
             else:
                 result = "I can't determine the color without a camera frame."
             self._history_append(question, result, _gen)
@@ -561,6 +580,30 @@ class Brain:
         text_desc = ", ".join(texts[:5]) or "none"
         history_str = _build_history_str(self._history)
 
+        # Try Gemini for structured reasoning (when keys configured)
+        try:
+            from backend.gemini_client import ask_text_only, is_available
+            if is_available():
+                gemini_prompt = (
+                    f"Scene data (from sensors): {json.dumps(context)}\n"
+                    f"Visible text: {text_desc}\n"
+                    f"{history_str}"
+                    f"Question: {question}\n\n"
+                    "Answer clearly and accurately using ONLY the scene data above. "
+                    "Keep your answer to 1-2 sentences. "
+                    "Do not add objects, distances, or context not listed in the scene data. "
+                    "If the data is insufficient, say so honestly."
+                )
+                gemini_answer = ask_text_only(
+                    f"You are helping a visually impaired person. Answer clearly in 1-2 sentences.\n\nQuestion: {question}",
+                    context=f"Scene data: {json.dumps(context)}\nVisible text: {text_desc}"
+                )
+                if gemini_answer:
+                    logger.info("[Brain] Using Gemini AI for structured answer")
+                    return gemini_answer
+        except Exception as e:
+            logger.debug("[Brain] Gemini text fallback: %s", e)
+
         prompt = (
             "You are an AI assistant helping a visually impaired person navigate safely.\n"
             f"Scene data (from sensors): {json.dumps(context)}\n"
@@ -663,12 +706,30 @@ class Brain:
                     crop_frame = cropped
                     grounded_class = class_name
 
+        # ── Try Gemini first (AI-powered accuracy when keys configured) ────────
+        try:
+            from backend.gemini_client import ask_vision, is_available
+            if is_available():
+                context_parts = []
+                if detections:
+                    obj_desc = self._describe_objects(detections)
+                    context_parts.append(f"Detected objects: {obj_desc}")
+                if texts:
+                    context_parts.append(f"Visible text: {', '.join(texts[:3])}")
+                context = " ".join(context_parts) if context_parts else ""
+                gemini_answer = ask_vision(question, crop_frame, context)
+                if gemini_answer:
+                    logger.info("[Brain] Using Gemini AI for visual answer")
+                    return gemini_answer
+        except Exception as e:
+            logger.debug("[Brain] Gemini vision fallback: %s", e)
+
         # ── Encode crop (or full frame) to JPEG base64 ────────────────────────
         img_b64 = _encode_frame_b64(crop_frame, max_width=512)
         if img_b64 is None:
             return self._run_phi3_text(question, detections, texts)
 
-        # ── Build grounded prompt ─────────────────────────────────────────────
+        # ── Build grounded prompt (LLaVA fallback) ─────────────────────────────
         history_str = _build_history_str(self._history)
 
         if find_target:
@@ -788,14 +849,22 @@ class Brain:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _describe_objects(self, detections: list) -> str:
+        """Google-level: Enhanced object description with more details."""
         if not detections:
             return "nothing specific detected"
         parts = []
-        for d in detections[:8]:
+        for d in detections[:10]:  # Increased from 8 to 10 for better context
             name      = d.class_name if hasattr(d, "class_name") else str(d)
             direction = getattr(d, "direction", "")
             distance  = getattr(d, "distance",  "")
-            parts.append(f"{name} ({direction}, {distance})" if direction else name)
+            confidence = getattr(d, "confidence", 0.0)
+            # Include confidence for better context
+            if direction and distance:
+                parts.append(f"{name} ({direction}, {distance}, {int(confidence*100)}% confidence)")
+            elif direction:
+                parts.append(f"{name} ({direction})")
+            else:
+                parts.append(name)
         return "; ".join(parts)
 
     def _run_ollama(self, prompt: str, obj_desc: str, texts: List[str]) -> str:

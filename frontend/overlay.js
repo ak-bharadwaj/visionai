@@ -8,11 +8,23 @@ const LABELS  = { 1: 'VERY CLOSE', 2: 'NEARBY', 3: 'AHEAD', 4: 'FAR' };
 
 function resizeCanvas() {
   const wrap = document.getElementById('camera-wrap');
-  canvas.width  = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
+  if (!wrap || !canvas) {
+    console.warn('[Overlay] Camera wrap or canvas not found');
+    return;
+  }
+  const w = wrap.clientWidth || 640;
+  const h = wrap.clientHeight || 480;
+  canvas.width  = w;
+  canvas.height = h;
+  console.debug('[Overlay] Canvas resized to', w, 'x', h);
 }
 window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
+// Google-level: Initialize canvas immediately
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', resizeCanvas);
+} else {
+  resizeCanvas();
+}
 
 // Scale factor: bbox coords are in original camera frame space.
 // Backend sends frame_w / frame_h with every detection message.
@@ -209,29 +221,67 @@ const overlay = {
     ctx.fillText('FAR-R', w * 0.875, 14);
   },
   _drawBox(d, frame_w, frame_h) {
+    // Google-level: Enhanced bbox drawing with validation
+    if (!d || !frame_w || !frame_h) {
+      console.warn('[Overlay] Invalid bbox data:', d, frame_w, frame_h);
+      return;
+    }
+    
     const dw = canvas.width, dh = canvas.height;
-    const x1 = scaleCoord(d.x1, frame_w, dw);
-    const y1 = scaleCoord(d.y1, frame_h, dh);
-    const x2 = scaleCoord(d.x2, frame_w, dw);
-    const y2 = scaleCoord(d.y2, frame_h, dh);
+    if (dw === 0 || dh === 0) {
+      console.warn('[Overlay] Canvas not initialized');
+      return;
+    }
+    
+    // Validate and fix coordinates
+    let x1 = Number(d.x1) || 0;
+    let y1 = Number(d.y1) || 0;
+    let x2 = Number(d.x2) || frame_w;
+    let y2 = Number(d.y2) || frame_h;
+    
+    // Ensure valid bbox
+    if (x2 <= x1) x2 = x1 + 10;
+    if (y2 <= y1) y2 = y1 + 10;
+    
+    // Scale to display
+    const sx1 = scaleCoord(x1, frame_w, dw);
+    const sy1 = scaleCoord(y1, frame_h, dh);
+    const sx2 = scaleCoord(x2, frame_w, dw);
+    const sy2 = scaleCoord(y2, frame_h, dh);
+    
+    // Ensure scaled coords are valid
+    if (sx2 <= sx1 || sy2 <= sy1) {
+      console.warn('[Overlay] Invalid scaled bbox:', sx1, sy1, sx2, sy2);
+      return;
+    }
+    
     const color = COLORS[d.distance_level] || '#ffffff';
-    const conf  = Math.round(d.confidence * 100);
-    const label = `${d.class_name} · ${d.distance} · ${conf}%`;
+    const conf  = Math.round((d.confidence || 0.5) * 100);
+    const className = d.class_name || 'object';
+    const distance = d.distance || 'unknown';
+    const label = `${className} · ${distance} · ${conf}%`;
 
-    // Box
+    // Draw box with thicker line for visibility
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.lineWidth = 3;  // Increased from 2 for better visibility
+    ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
 
-    // Filled label background
-    ctx.font = 'bold 11px Inter, sans-serif';
+    // Filled label background with better contrast
+    ctx.font = 'bold 12px Inter, sans-serif';  // Slightly larger font
     const textW = ctx.measureText(label).width;
+    const labelH = 22;  // Slightly taller
     ctx.fillStyle = color;
-    ctx.fillRect(x1, y1 - 20, textW + 10, 20);
+    ctx.fillRect(sx1, sy1 - labelH, textW + 12, labelH);
 
-    // Label text
+    // Label text with better visibility
     ctx.fillStyle = '#fff';
-    ctx.fillText(label, x1 + 5, y1 - 6);
+    ctx.fillText(label, sx1 + 6, sy1 - 8);
+    
+    // Debug: log first box drawn
+    if (!this._loggedFirstBox) {
+      console.log('[Overlay] Drawing first box:', { className, x1, y1, x2, y2, sx1, sy1, sx2, sy2 });
+      this._loggedFirstBox = true;
+    }
   }
 };
 

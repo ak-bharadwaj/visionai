@@ -24,6 +24,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log model status at startup
+try:
+    from backend.model_checker import check_models
+    model_status = check_models()
+    logger.info(
+        "[VisionTalk] Models: YOLO=%s (available: %s), Depth=MiDaS, OCR=PaddleOCR",
+        model_status["yolo"]["configured"],
+        model_status["yolo"]["available"] or "none",
+    )
+    if model_status["gemini"]["configured"]:
+        from backend.gemini_client import is_available
+        if is_available():
+            logger.info("[VisionTalk] Gemini API enabled with %d key(s)", model_status["gemini"]["keys"])
+except Exception as e:
+    logger.debug("[VisionTalk] Model check: %s", e)
+
 FRONTEND = Path(__file__).parent.parent / "frontend"
 clients: set[WebSocket] = set()
 
@@ -138,10 +154,18 @@ async def _stt_dispatcher():
                 # the plain "didn't catch that" so users learn available commands.
                 if _unrecognised_count % _HELP_HINT_EVERY == 0:
                     hint = _HELP_HINTS[(_unrecognised_count // _HELP_HINT_EVERY - 1) % len(_HELP_HINTS)]
-                    tts_engine.speak(hint, priority=False)
+                    try:
+                        from backend.tts_wrapper import safe_speak
+                        safe_speak(tts_engine, hint, priority=False)
+                    except Exception:
+                        tts_engine.speak(hint, priority=False)
                     logger.debug("[VisionTalk] STT: unrecognised × %d → help hint.", _unrecognised_count)
                 else:
-                    tts_engine.speak("Sorry, I didn't catch that.", priority=False)
+                    try:
+                        from backend.tts_wrapper import safe_speak
+                        safe_speak(tts_engine, "Sorry, I didn't catch that.", priority=False)
+                    except Exception:
+                        tts_engine.speak("Sorry, I didn't catch that.", priority=False)
                     logger.debug("[VisionTalk] STT: unrecognised speech → feedback spoken.")
 
         # ── Drain classified commands ────────────────────────────────────
@@ -175,7 +199,11 @@ async def _stt_dispatcher():
                     "FIND":     "Find mode activated.",
                 }
                 msg = confirmations.get(new_mode, f"Switching to {new_mode.lower()} mode.")
-                tts_engine.speak(msg, priority=False)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, msg, priority=False)
+                except Exception:
+                    tts_engine.speak(msg, priority=False)
                 await broadcast({"type": "system", "text": f"Voice: switched to {new_mode}"})
 
             elif action == "ask":
@@ -220,7 +248,11 @@ async def _stt_dispatcher():
                 if target:
                     diagnostics.voice_command_received(action="find_object", detail=target)
                     pipeline.set_find_target(target)
-                    tts_engine.speak(f"Looking for {target}.", priority=False)
+                    try:
+                        from backend.tts_wrapper import safe_speak
+                        safe_speak(tts_engine, f"Looking for {target}.", priority=False)
+                    except Exception:
+                        tts_engine.speak(f"Looking for {target}.", priority=False)
                     await broadcast({"type": "system", "text": f"Searching for: {target}"})
                     last_frame = pipeline.get_last_frame()
                     if last_frame is not None:
@@ -237,20 +269,28 @@ async def _stt_dispatcher():
                     diagnostics.voice_command_received(action="nav_destination", detail=dest)
                     mode_manager.set_mode("NAVIGATE")  # ensure pipeline runs in NAVIGATE
                     pipeline.set_nav_destination(dest)
-                    tts_engine.speak(f"Navigating to {dest}. I'll guide you there.", priority=True)
+                    # TTS confirmation is now handled in set_nav_destination()
                     await broadcast({"type": "system", "text": f"Navigating to: {dest}"})
                     logger.info("[VisionTalk] STT nav_destination: %r", dest)
 
             elif action == "snapshot":
                 diagnostics.voice_command_received(action="snapshot")
                 pipeline.take_snapshot()
-                tts_engine.speak("Scene saved.", priority=False)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, "Scene saved.", priority=False)
+                except Exception:
+                    tts_engine.speak("Scene saved.", priority=False)
                 await broadcast({"type": "system", "text": "Scene snapshot saved."})
 
             elif action == "scene_diff":
                 diagnostics.voice_command_received(action="scene_diff")
                 diff = pipeline.get_scene_diff()
-                tts_engine.speak(diff, priority=True)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, diff, priority=True)
+                except Exception:
+                    tts_engine.speak(diff, priority=True)
                 await broadcast({
                     "type":         "answer",
                     "answer":       diff,
@@ -262,9 +302,17 @@ async def _stt_dispatcher():
             elif action == "repeat":
                 diagnostics.voice_command_received(action="repeat")
                 if _last_spoken:
-                    tts_engine.speak(_last_spoken, priority=True)
+                    try:
+                        from backend.tts_wrapper import safe_speak
+                        safe_speak(tts_engine, _last_spoken, priority=True)
+                    except Exception:
+                        tts_engine.speak(_last_spoken, priority=True)
                 else:
-                    tts_engine.speak("Nothing to repeat.", priority=False)
+                    try:
+                        from backend.tts_wrapper import safe_speak
+                        safe_speak(tts_engine, "Nothing to repeat.", priority=False)
+                    except Exception:
+                        tts_engine.speak("Nothing to repeat.", priority=False)
 
             await _set_voice_state(VoiceState.SPEAKING)
             # Transition back to IDLE after a short delay — actual TTS
@@ -454,7 +502,11 @@ async def ws_endpoint(websocket: WebSocket):
                     "type": "system",
                     "text": "Scene snapshot saved. Say 'What changed?' to compare."
                 })
-                tts_engine.speak("Scene saved. Say what changed to compare.", priority=False)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, "Scene saved. Say what changed to compare.", priority=False)
+                except Exception:
+                    tts_engine.speak("Scene saved. Say what changed to compare.", priority=False)
 
             elif action == "scene_diff":
                 diff = pipeline.get_scene_diff()
@@ -465,7 +517,11 @@ async def ws_endpoint(websocket: WebSocket):
                     "question":     "What changed?",
                     "input_source": src,
                 })
-                tts_engine.speak(diff, priority=True)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, diff, priority=True)
+                except Exception:
+                    tts_engine.speak(diff, priority=True)
 
             elif action == "clear_history":
                 brain.clear_history()
@@ -480,7 +536,11 @@ async def ws_endpoint(websocket: WebSocket):
                         "type": "system",
                         "text": f"Searching for: {target}"
                     })
-                    tts_engine.speak(f"Looking for {target}.", priority=False)
+                    try:
+                        from backend.tts_wrapper import safe_speak
+                        safe_speak(tts_engine, f"Looking for {target}.", priority=False)
+                    except Exception:
+                        tts_engine.speak(f"Looking for {target}.", priority=False)
                     # Immediately process with the last cached frame so the
                     # answer arrives without waiting for the next FIND frame.
                     last_frame = pipeline.get_last_frame()
@@ -522,7 +582,11 @@ async def ws_endpoint(websocket: WebSocket):
                     "state": "confirming",
                     "text":  "Shall I capture what's in front of me?",
                 })
-                tts_engine.speak("Shall I capture what's in front of me?", priority=True)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, "Shall I capture what's in front of me?", priority=True)
+                except Exception:
+                    tts_engine.speak("Shall I capture what's in front of me?", priority=True)
 
             elif action == "find_capture":
                 # User confirmed — freeze current frame
@@ -535,7 +599,11 @@ async def ws_endpoint(websocket: WebSocket):
                     "state": "captured",
                     "text":  "What would you like to know?",
                 })
-                tts_engine.speak("What would you like to know?", priority=True)
+                try:
+                    from backend.tts_wrapper import safe_speak
+                    safe_speak(tts_engine, "What would you like to know?", priority=True)
+                except Exception:
+                    tts_engine.speak("What would you like to know?", priority=True)
 
             elif action == "find_question":
                 q   = data.get("question", "").strip()
@@ -580,7 +648,7 @@ async def ws_endpoint(websocket: WebSocket):
                         "type": "system",
                         "text": f"Navigating to: {dest}",
                     })
-                    tts_engine.speak(f"Navigating to {dest}. I'll guide you there.", priority=True)
+                    # TTS confirmation is now handled in set_nav_destination()
                     logger.info("[VisionTalk] nav_destination set: %r", dest)
 
             # Repeat: client sends last banner text; server broadcasts it for browser TTS

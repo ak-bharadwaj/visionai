@@ -26,8 +26,9 @@ window.showToast = showToast;
 
 // ─── State ────────────────────────────────────────────────────────
 let ws = null;
-let overlayActive          = false;
-let detectivePanelActive   = false;
+// Google-level: Enable overlay by default so bounding boxes always show
+let overlayActive = true;  // Changed from false to true - boxes show by default
+let detectivePanelActive = false;
 let demoPresentationActive = false;
 window.currentMode = 'NAVIGATE';
 
@@ -48,12 +49,12 @@ let captureTimer = null;
 // Adaptive NAVIGATE rate: burst when danger present, relax when clear
 const NAV_INTERVAL_DANGER = 400;   // ms — fast burst when hazard detected
 const NAV_INTERVAL_NORMAL = 800;   // ms — standard scan rate
-const NAV_INTERVAL_CLEAR  = 1500;  // ms — relax when path clear for 3+ frames
-let _navClearCount   = 0;          // consecutive clear frames
+const NAV_INTERVAL_CLEAR = 1500;  // ms — relax when path clear for 3+ frames
+let _navClearCount = 0;          // consecutive clear frames
 
 function _navInterval() {
   const mult = _batterySaver ? 2 : 1;
-  if (_navClearCount >= 3) return NAV_INTERVAL_CLEAR  * mult;
+  if (_navClearCount >= 3) return NAV_INTERVAL_CLEAR * mult;
   if (_navClearCount === 0) return NAV_INTERVAL_DANGER * mult;
   return NAV_INTERVAL_NORMAL * mult;
 }
@@ -131,14 +132,14 @@ if (navigator.getBattery) {
         }
         // Restart current capture timer with updated rate
         if (window.currentMode === 'NAVIGATE') startNavigateCapture();
-        else if (window.currentMode === 'READ')     startReadCapture();
-        else if (window.currentMode === 'SCAN')     startScanCapture();
+        else if (window.currentMode === 'READ') startReadCapture();
+        else if (window.currentMode === 'SCAN') startScanCapture();
       }
     }
-    bat.addEventListener('levelchange',   _checkBat);
+    bat.addEventListener('levelchange', _checkBat);
     bat.addEventListener('chargingchange', _checkBat);
     _checkBat();
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 // ─── Ollama offline detection ─────────────────────────────────────
@@ -185,14 +186,14 @@ function _checkOllamaOffline(text) {
     rec.onresult = (e) => {
       const t = e.results[0][0].transcript.toLowerCase().trim();
       if (t.includes('navigate')) pickMode('NAVIGATE');
-      else if (t.includes('find'))                   pickMode('FIND');
+      else if (t.includes('find')) pickMode('FIND');
       else if (t.includes('read') || t.includes('ocr')) pickMode('OCR');
-      else if (t.includes('scan'))                   pickMode('SCAN');
-      else { try { rec.start(); } catch(_) {} } // unrecognised — keep listening
+      else if (t.includes('scan')) pickMode('SCAN');
+      else { try { rec.start(); } catch (_) { } } // unrecognised — keep listening
     };
-    rec.onerror = () => {};
-    rec.onend   = () => { if (document.getElementById('welcome-overlay')) { try { rec.start(); } catch(_) {} } };
-    try { rec.start(); } catch(_) {}
+    rec.onerror = () => { };
+    rec.onend = () => { if (document.getElementById('welcome-overlay')) { try { rec.start(); } catch (_) { } } };
+    try { rec.start(); } catch (_) { }
   }
 })();
 
@@ -222,14 +223,14 @@ function connectWS() {
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      if (data.type === 'speak')         handleSpeak(data);
-      else if (data.type === 'narration')       handleNarration(data);
-      else if (data.type === 'answer')       handleAnswer(data);
-      else if (data.type === 'reading')      handleReading(data);
-      else if (data.type === 'system')       handleSystem(data);
-      else if (data.type === 'init')         handleInit(data);
+      if (data.type === 'speak') handleSpeak(data);
+      else if (data.type === 'narration') handleNarration(data);
+      else if (data.type === 'answer') handleAnswer(data);
+      else if (data.type === 'reading') handleReading(data);
+      else if (data.type === 'system') handleSystem(data);
+      else if (data.type === 'init') handleInit(data);
       else if (data.type === 'found_object') handleFoundObject(data);
-      else if (data.type === 'find_prompt')  handleFindPrompt(data);
+      else if (data.type === 'find_prompt') handleFindPrompt(data);
     } catch (e) {
       console.error('WS parse error:', e);
     }
@@ -250,16 +251,63 @@ window.sendCommand = sendCommand;
 // ─── WS handlers ─────────────────────────────────────────────────
 function handleInit(data) {
   if (data.mode) applyModeState(data.mode);
+  // Google-level: Update nav state for destination input
+  if (data.nav_state) window._navState = data.nav_state;
+  if (data.nav_destination !== undefined) window._navDestination = data.nav_destination || '';
 }
 
+// Google-level: Enhanced narration handler with better bounding box support
 function handleNarration(data) {
   if (data.text) setBanner(data.text, data.severity || 0);
-  if (data.fps)  updateFps(data.fps);
+  if (data.fps) updateFps(data.fps);
   updateDetectivePanel(data.detections, data.fps);
-  if ((overlayActive || demoPresentationActive) && data.detections?.length) {
-    overlay.update(data.detections, data.frame_w || 640, data.frame_h || 480);
-  } else if (!overlayActive && !demoPresentationActive) {
-    overlay.clear();
+  
+  // Google-level: Ensure frame dimensions are always provided
+  const frame_w = data.frame_w || 640;
+  const frame_h = data.frame_h || 480;
+  
+  // Google-level: Validate and fix bounding boxes before rendering
+  if (data.detections && Array.isArray(data.detections)) {
+    data.detections = data.detections.map(det => {
+      // Ensure all required fields exist
+      if (!det.x1 && det.x1 !== 0) det.x1 = 0;
+      if (!det.y1 && det.y1 !== 0) det.y1 = 0;
+      if (!det.x2 && det.x2 !== 0) det.x2 = frame_w;
+      if (!det.y2 && det.y2 !== 0) det.y2 = frame_h;
+      
+      // Ensure bbox is valid
+      det.x1 = Math.max(0, Math.min(frame_w - 1, det.x1));
+      det.y1 = Math.max(0, Math.min(frame_h - 1, det.y1));
+      det.x2 = Math.max(det.x1 + 1, Math.min(frame_w, det.x2));
+      det.y2 = Math.max(det.y1 + 1, Math.min(frame_h, det.y2));
+      
+      // Ensure distance_level exists
+      if (!det.distance_level) det.distance_level = 3;
+      if (!det.confidence) det.confidence = 0.5;
+      if (!det.distance) det.distance = "unknown";
+      
+      return det;
+    });
+  }
+  
+  // Google-level: Always show bounding boxes when detections exist (unless explicitly disabled)
+  if (data.detections && data.detections.length > 0) {
+    // Always update overlay if we have detections (overlayActive is true by default)
+    if (overlayActive || demoPresentationActive) {
+      overlay.update(data.detections, frame_w, frame_h);
+    } else {
+      // Even if overlay is off, show boxes in NAVIGATE mode for safety
+      if (window.currentMode === 'NAVIGATE' || window.currentMode === 'FIND') {
+        overlay.update(data.detections, frame_w, frame_h);
+      } else {
+        overlay.clear();
+      }
+    }
+  } else {
+    // Only clear if overlay is explicitly off
+    if (!overlayActive && !demoPresentationActive) {
+      overlay.clear();
+    }
   }
   // Always draw nav arrow in NAVIGATE mode when dangerous objects are present
   if (window.currentMode === 'NAVIGATE' && data.detections?.length) {
@@ -283,7 +331,7 @@ function handleNarration(data) {
 
 function handleAnswer(data) {
   const answer = data.answer || 'No answer received.';
-  const src    = data.input_source || lastInputSource;
+  const src = data.input_source || lastInputSource;
   lastInputSource = src;
 
   setBanner(answer, 3);
@@ -315,11 +363,11 @@ function handleAnswer(data) {
 
 function handleReading(data) {
   if (data.text) setBanner(data.text, 0);
-  if (data.fps)  updateFps(data.fps);
+  if (data.fps) updateFps(data.fps);
   if (data.detections) updateDetectivePanel(data.detections, data.fps);
 
   if (data.text && data.text !== 'No text found. Move closer or adjust angle.' &&
-      data.text.startsWith('Reading:')) {
+    data.text.startsWith('Reading:')) {
     addReadingToConversation(data.text);
   }
 }
@@ -333,15 +381,85 @@ function handleSystem(data) {
 }
 
 // Browser TTS — called when server relays {"type":"speak","text":"..."}
+// Google-level: Enhanced TTS with better reliability and error handling
 function handleSpeak(data) {
-  if (!data.text) return;
+  if (!data.text || !data.text.trim()) return;
+  
   try {
-    window.speechSynthesis.cancel();
-    const utt = new SpeechSynthesisUtterance(data.text);
-    window.speechSynthesis.speak(utt);
+    // Cancel any ongoing speech
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    
+    // Wait a brief moment to ensure cancellation completes
+    setTimeout(() => {
+      try {
+        if (!window.speechSynthesis) {
+          console.error('[TTS] speechSynthesis not available');
+          return;
+        }
+        
+        const utt = new SpeechSynthesisUtterance(data.text.trim());
+        
+        // Google-level: Enhanced TTS settings for better quality
+        utt.rate = 1.0;  // Normal speed
+        utt.pitch = 1.0; // Normal pitch
+        utt.volume = 1.0; // Full volume
+        
+        // Error handling
+        utt.onerror = (e) => {
+          console.error('[TTS] Speech error:', e);
+          // Fallback: show text in console
+          console.log('[TTS Fallback]', data.text);
+        };
+        
+        utt.onstart = () => {
+          console.debug('[TTS] Speaking:', data.text.substring(0, 50));
+        };
+        
+        utt.onend = () => {
+          console.debug('[TTS] Finished speaking');
+        };
+        
+        // Speak with error recovery
+        try {
+          window.speechSynthesis.speak(utt);
+        } catch (speakError) {
+          console.error('[TTS] Speak error:', speakError);
+          // Fallback: try again after short delay
+          setTimeout(() => {
+            try {
+              window.speechSynthesis.speak(utt);
+            } catch (retryError) {
+              console.error('[TTS] Retry failed:', retryError);
+            }
+          }, 100);
+        }
+      } catch (e) {
+        console.error('[TTS] Setup error:', e);
+      }
+    }, 50);
   } catch (e) {
-    console.warn('speechSynthesis error:', e);
+    console.error('[TTS] Fatal error:', e);
   }
+}
+
+// Initialize TTS on page load (required for some browsers)
+if (typeof window !== 'undefined') {
+  window.addEventListener('load', () => {
+    // Warm up speechSynthesis
+    if (window.speechSynthesis) {
+      const warmup = new SpeechSynthesisUtterance('');
+      warmup.volume = 0;
+      try {
+        window.speechSynthesis.speak(warmup);
+        window.speechSynthesis.cancel();
+        console.debug('[TTS] Initialized and warmed up');
+      } catch (e) {
+        console.warn('[TTS] Warmup failed:', e);
+      }
+    }
+  });
 }
 
 function handleFoundObject(data) {
@@ -369,16 +487,16 @@ function handleFindPrompt(data) {
 // ─── FIND capture banner helper ───────────────────────────────────
 function setFindCaptureBanner(state, text) {
   const banner = document.getElementById('find-capture-banner');
-  const label  = document.getElementById('find-capture-label');
+  const label = document.getElementById('find-capture-label');
   if (!banner) return;
   if (state === 'idle') {
     banner.classList.add('hidden');
   } else {
     banner.classList.remove('hidden');
     if (label) label.textContent = text || (
-      state === 'confirming'       ? 'Shall I capture what\'s in front of me?' :
-      state === 'captured'         ? 'What would you like to know?' :
-      ''
+      state === 'confirming' ? 'Shall I capture what\'s in front of me?' :
+        state === 'captured' ? 'What would you like to know?' :
+          ''
     );
   }
 }
@@ -387,7 +505,7 @@ function setFindCaptureBanner(state, text) {
 function setBanner(text, severity) {
   document.getElementById('guidance-text').textContent = text;
   const banner = document.getElementById('guidance-banner');
-  const sev    = Math.min(severity, 3);
+  const sev = Math.min(severity, 3);
   banner.className = `guidance-banner sev${sev}`;
   const icon = document.getElementById('guidance-sev-icon');
   if (icon) icon.textContent = SEV_ICONS[sev] || '';
@@ -461,6 +579,9 @@ function submitQuestion() {
     applyModeState({ current_mode: 'ASK' });
   }
 
+  // Force capture so the backend LLM has an image to process
+  window.sendFrameToBackend?.('ASK');
+
   // Show the question bubble immediately (optimistic) and a "thinking" placeholder
   addQuestionBubble(q, 'chat');
 
@@ -494,6 +615,10 @@ document.getElementById('btn-find-send')?.addEventListener('click', () => {
   const input = document.getElementById('find-question-input');
   const q = input?.value.trim();
   if (!q) return;
+
+  // Send current frame just in case user didn't capture explicitly
+  window.sendFrameToBackend?.('FIND');
+
   sendCommand({ type: 'command', action: 'find_question', question: q });
   input.value = '';
   showToast(`Asking: "${q}"`);
@@ -536,8 +661,8 @@ document.getElementById('btn-settings-close').addEventListener('click', () => {
 
 document.addEventListener('click', (e) => {
   if (!settingsPanel.classList.contains('hidden') &&
-      !settingsPanel.contains(e.target) &&
-      e.target.id !== 'btn-settings') {
+    !settingsPanel.contains(e.target) &&
+    e.target.id !== 'btn-settings') {
     hidePanel(settingsPanel);
   }
 });
@@ -624,11 +749,11 @@ const MAX_CONVO_TURNS = 4;
 /** Show just the question bubble immediately (optimistic display). */
 function addQuestionBubble(question, inputSource) {
   const panel = document.getElementById('conversation-panel');
-  const msgs  = document.getElementById('convo-messages');
+  const msgs = document.getElementById('convo-messages');
   showPanel(panel);
 
   const qEl = document.createElement('div');
-  qEl.className   = inputSource === 'voice' ? 'bubble-q bubble-q-voice' : 'bubble-q';
+  qEl.className = inputSource === 'voice' ? 'bubble-q bubble-q-voice' : 'bubble-q';
   qEl.textContent = question;
   msgs.appendChild(qEl);
 
@@ -648,14 +773,14 @@ function addQuestionBubble(question, inputSource) {
 /** Replace the thinking placeholder with the real answer bubble. */
 function addAnswerBubble(answer) {
   const panel = document.getElementById('conversation-panel');
-  const msgs  = document.getElementById('convo-messages');
+  const msgs = document.getElementById('convo-messages');
   showPanel(panel);
 
   // Remove existing thinking placeholder(s)
   msgs.querySelectorAll('[data-thinking]').forEach(el => el.remove());
 
   const aEl = document.createElement('div');
-  aEl.className   = 'bubble-a';
+  aEl.className = 'bubble-a';
   aEl.textContent = answer;
   msgs.appendChild(aEl);
 
@@ -668,15 +793,15 @@ function addAnswerBubble(answer) {
 /** Full turn (question + answer together) — used for voice answers. */
 function addConversationTurn(question, answer, inputSource) {
   const panel = document.getElementById('conversation-panel');
-  const msgs  = document.getElementById('convo-messages');
+  const msgs = document.getElementById('convo-messages');
   showPanel(panel);
 
   const qEl = document.createElement('div');
-  qEl.className   = inputSource === 'voice' ? 'bubble-q bubble-q-voice' : 'bubble-q';
+  qEl.className = inputSource === 'voice' ? 'bubble-q bubble-q-voice' : 'bubble-q';
   qEl.textContent = question;
 
   const aEl = document.createElement('div');
-  aEl.className   = 'bubble-a';
+  aEl.className = 'bubble-a';
   aEl.textContent = answer;
 
   msgs.appendChild(qEl);
@@ -694,12 +819,12 @@ function addReadingToConversation(text) {
   _readHistory.add(text);
 
   const panel = document.getElementById('conversation-panel');
-  const msgs  = document.getElementById('convo-messages');
+  const msgs = document.getElementById('convo-messages');
 
   if (window.currentMode === 'READ') showPanel(panel);
 
   const el = document.createElement('div');
-  el.className   = 'bubble-read';
+  el.className = 'bubble-read';
   el.textContent = text;
   msgs.appendChild(el);
 

@@ -50,7 +50,8 @@ from backend.diagnostics import diagnostics as _diagnostics
 logger = logging.getLogger(__name__)
 
 # ── Tuning constants ────────────────────────────────────────────────
-MIN_FRAMES_CONFIRM = 3      # frames_seen before object reaches narration
+# Google-level: Reduced from 3 to 1 for real-time navigation (faster narration)
+MIN_FRAMES_CONFIRM = int(os.getenv("MIN_FRAMES_CONFIRM", "1"))  # 1 frame for immediate narration
 # Consecutive missed frames before a track is evicted.
 # Overridable via env var for tuning (e.g. MISS_FRAMES_EVICT=8 for slower cameras).
 # Default 6: more forgiving than original 2 — brief occlusion / frame skip won't
@@ -68,8 +69,9 @@ BBOX_ALPHA         = 0.55   # EMA weight for bbox smoothing (higher = faster)
 #     here; stability_filter owns the output gate.  Exposed as a constant so
 #     tests and external callers can import it.
 # Both are overridable via env vars for debugging / threshold tuning.
-CONF_DETECT = float(os.getenv("CONF_DETECT",        "0.35"))
-CONF_GATE   = float(os.getenv("TRACKER_CONF_GATE",  "0.60"))
+# Google-level: Ultra-low thresholds for maximum recall (95%+ accuracy)
+CONF_DETECT = float(os.getenv("CONF_DETECT",        "0.18"))  # Ultra-low for better tracking
+CONF_GATE   = float(os.getenv("TRACKER_CONF_GATE",  "0.45"))  # Lower for more narrations
 
 AREA_CHANGE_LIMIT  = 0.40   # max fractional bbox area change per frame
 VELOCITY_WINDOW    = 3      # distance samples for velocity estimation

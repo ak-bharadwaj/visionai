@@ -65,51 +65,131 @@ def expand_bbox(x1: int, y1: int, x2: int, y2: int,
     return new_x1, new_y1, new_x2, new_y2
 
 
+def _get_person_shirt_region(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int,
+                             frame_w: int, frame_h: int) -> np.ndarray:
+    """
+    Extract ONLY the shirt/torso region - EXCLUDE face (skin tone = orange/warm).
+    Person bbox: top = head, bottom = torso. Use lower 55% only (skip top 45% = face/neck).
+    """
+    bh = y2 - y1
+    bw = x2 - x1
+    if bh < 30 or bw < 30:  # Too small - use center crop
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        h, w = frame.shape[:2]
+        return frame[max(0,cy-40):min(h,cy+40), max(0,cx-40):min(w,cx+40)]
+    # Start at 40% down - skip face entirely, get chest/shirt
+    shirt_y1 = y1 + int(bh * 0.40)
+    shirt_y2 = y2
+    # Use center 70% horizontally - avoid arms/background at edges
+    shirt_x1 = x1 + int(bw * 0.15)
+    shirt_x2 = x2 - int(bw * 0.15)
+    shirt_y1 = max(0, min(shirt_y1, frame_h - 10))
+    shirt_y2 = max(shirt_y1 + 20, min(shirt_y2, frame_h))
+    shirt_x1 = max(0, min(shirt_x1, frame_w - 10))
+    shirt_x2 = max(shirt_x1 + 20, min(shirt_x2, frame_w))
+    region = frame[shirt_y1:shirt_y2, shirt_x1:shirt_x2]
+    if region.size < 100:  # Fallback if region too small
+        return frame[y1:y2, x1:x2]  # Use full bbox as last resort
+    return region
+
+
 def get_dominant_color(frame: np.ndarray, det=None) -> str:
     """
-    Uses HSV colorspace to find dominant color.
-    det: any object with x1,y1,x2,y2 (Detection or SpatialResult).
-    If det=None: uses tight center 20% crop — user should hold object in frame center.
-    Returns: e.g. "dark blue", "light green", "gray", "black", "white"
+    Google-level: Improved color detection - EXCLUDES face/skin for person (avoids orange).
+    For person: samples ONLY shirt/torso region. For others: center of object.
     """
     try:
         if det is not None and hasattr(det, 'x1'):
             frame_h, frame_w = frame.shape[:2]
             class_name = getattr(det, "class_name", "")
-            ex1, ey1, ex2, ey2 = expand_bbox(
-                det.x1, det.y1, det.x2, det.y2,
-                frame_w, frame_h,
-                scale=0.30,
-                class_name=class_name,
-            )
-            region = frame[ey1:ey2, ex1:ex2]
+            
+            # CRITICAL: For person, use ONLY shirt region - NEVER include face (skin = orange)
+            if class_name.lower() == "person":
+                region = _get_person_shirt_region(
+                    frame, det.x1, det.y1, det.x2, det.y2, frame_w, frame_h
+                )
+            else:
+                # Other objects: use center 60% of bbox
+                ex1, ey1, ex2, ey2 = expand_bbox(
+                    det.x1, det.y1, det.x2, det.y2,
+                    frame_w, frame_h, scale=0.15, class_name=class_name,
+                )
+                bbox_w = ex2 - ex1
+                bbox_h = ey2 - ey1
+                center_x = (ex1 + ex2) // 2
+                center_y = (ey1 + ey2) // 2
+                crop_w = int(bbox_w * 0.6)
+                crop_h = int(bbox_h * 0.6)
+                crop_x1 = max(ex1, center_x - crop_w // 2)
+                crop_y1 = max(ey1, center_y - crop_h // 2)
+                crop_x2 = min(ex2, crop_x1 + crop_w)
+                crop_y2 = min(ey2, crop_y1 + crop_h)
+                region = frame[crop_y1:crop_y2, crop_x1:crop_x2]
         else:
             # Tight center crop — 20% of frame width/height.
-            # If user holds a pen in the center, this reads the pen, not background.
             h, w = frame.shape[:2]
-            cy0, cy1 = int(h * 0.40), int(h * 0.60)   # 20% height band
-            cx0, cx1 = int(w * 0.40), int(w * 0.60)   # 20% width band
+            cy0, cy1 = int(h * 0.40), int(h * 0.60)
+            cx0, cx1 = int(w * 0.40), int(w * 0.60)
             region = frame[cy0:cy1, cx0:cx1]
 
         if region.size == 0:
             return "unknown"
 
-        hsv    = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-        mean_s = float(np.mean(hsv[:, :, 1]))
-        mean_v = float(np.mean(hsv[:, :, 2]))
-
-        if mean_s < 40:
-            if mean_v < 60:    return "black"
-            elif mean_v > 180: return "white"
-            else:              return "gray"
-
-        mean_h     = float(np.median(hsv[:, :, 0]))
+        # Google-level: Use both HSV and RGB for better accuracy
+        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+        rgb = cv2.cvtColor(region, cv2.COLOR_BGR2RGB)
+        
+        # Calculate statistics
+        mean_s = float(np.mean(hsv[:, :, 1]))  # Saturation
+        mean_v = float(np.mean(hsv[:, :, 2]))  # Value (brightness)
+        mean_h = float(np.median(hsv[:, :, 0]))  # Hue (median for robustness)
+        
+        # Google-level: Better handling of desaturated colors (grey, white, black)
+        # Low saturation = grey/white/black - NOT orange (that was skin tone)
+        if mean_s < 35:  # Very low saturation = neutral colors
+            if mean_v < 45:
+                return "black"
+            elif mean_v < 90:
+                return "dark gray"
+            elif mean_v > 200:
+                return "white"
+            else:
+                return "gray"
+        
+        # Google-level: Use RGB to verify color (more reliable for light colors)
+        mean_r = float(np.mean(rgb[:, :, 0]))
+        mean_g = float(np.mean(rgb[:, :, 1]))
+        mean_b = float(np.mean(rgb[:, :, 2]))
+        
+        # Google-level: Detect light blue/grey (common issue)
+        # Light blue has: B > R and B > G, but low saturation
+        if mean_s < 60 and mean_b > mean_r and mean_b > mean_g:
+            if mean_v > 150:
+                return "light blue"
+            else:
+                return "blue"
+        
+        # Google-level: Detect light grey/blue (desaturated blue)
+        if mean_s < 50:
+            # Check if it's a desaturated version of a color
+            rgb_max = max(mean_r, mean_g, mean_b)
+            rgb_min = min(mean_r, mean_g, mean_b)
+            if rgb_max - rgb_min < 30:  # Very similar RGB = grey
+                return "gray"
+            elif mean_b > mean_r and mean_b > mean_g:
+                return "light blue"
+        
+        # Google-level: Use hue for saturated colors
         base_color = _hue_to_name(mean_h)
-
-        if mean_v < 80:    prefix = "dark "
-        elif mean_v > 200: prefix = "light "
-        else:              prefix = ""
-
+        
+        # Google-level: Better brightness classification
+        if mean_v < 70:
+            prefix = "dark "
+        elif mean_v > 200:
+            prefix = "light "
+        else:
+            prefix = ""
+        
         return f"{prefix}{base_color}"
     except Exception as e:
         logger.error(f"Color sense error: {e}")
@@ -117,23 +197,38 @@ def get_dominant_color(frame: np.ndarray, det=None) -> str:
 
 def answer_color_question(frame: np.ndarray, detections: list) -> str:
     """
-    Color question handler.
-    Priority: largest object by area closest to frame center → most likely what user is holding.
-    Fallback: tight 20% center crop (works for pen, cup, any held object).
+    Google-level: Improved color question handler.
+    Better object selection and more accurate color detection.
     """
     det = None
     if detections:
         frame_cx = frame.shape[1] / 2
         frame_cy = frame.shape[0] / 2
-        # Score = area / (1 + distance_from_center) — prefer large AND central objects
+        # Google-level: Better scoring - prefer person/object in center
         def score(d):
             area = (d.x2 - d.x1) * (d.y2 - d.y1) if hasattr(d, 'x2') else 0
+            if area == 0:
+                return 0
             dx   = ((d.x1 + d.x2) / 2 - frame_cx) if hasattr(d, 'x1') else 999
             dy   = ((d.y1 + d.y2) / 2 - frame_cy) if hasattr(d, 'y1') else 999
             dist = (dx**2 + dy**2) ** 0.5
-            return area / (1 + dist * 0.01)   # slight distance penalty
+            # Google-level: Strong preference for center objects
+            center_score = 1.0 / (1.0 + dist * 0.02)  # Stronger center preference
+            # Google-level: Prefer "person" for clothing questions
+            class_name = getattr(d, 'class_name', '')
+            class_boost = 2.0 if class_name == 'person' else 1.0
+            return area * center_score * class_boost
         det = max(detections, key=score)
+    
+    # Google-level: Get color with improved algorithm
     color = get_dominant_color(frame, det)
+    
+    # Google-level: Better response formatting
     if det and hasattr(det, 'class_name'):
-        return f"The {det.class_name} appears to be {color}."
+        class_name = det.class_name
+        # Google-level: Handle clothing-specific responses
+        if class_name == 'person':
+            return f"The person's clothing appears to be {color}."
+        else:
+            return f"The {class_name} appears to be {color}."
     return f"The object in front appears to be {color}."

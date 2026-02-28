@@ -9,11 +9,13 @@ class TTSEngine:
     NAV_RATE_LIMIT  = 2.0   # seconds — min gap between non-priority messages
 
     def __init__(self):
-        self._q:              queue.Queue      = queue.Queue(maxsize=5)
+        # Increased queue size for better reliability
+        self._q:              queue.Queue      = queue.Queue(maxsize=20)
         self._last:           dict[str, float] = {}
         self._last_nav_time:  float            = 0.0
         self._broadcast:      Callable | None  = None
         self._loop:           asyncio.AbstractEventLoop | None = None
+        self._speak_count:    int              = 0  # Track total speaks for cleanup
 
     def start(self, broadcast_fn: Callable = None, event_loop: asyncio.AbstractEventLoop = None):
         """Store broadcast callback and start worker thread."""
@@ -28,9 +30,22 @@ class TTSEngine:
         priority=True: clear queue first (for urgent alerts, level-1 distance).
         Dedup: drops if same text was spoken within DEDUP_WINDOW seconds.
         Rate limit: non-priority messages are dropped if last nav message was < NAV_RATE_LIMIT ago.
+        
+        Google-level: Enhanced reliability with better error handling.
         """
-        if not text:
+        if not text or not text.strip():
             return
+        
+        # Google-level: Clean and validate text
+        text = text.strip()
+        if len(text) == 0:
+            return
+        
+        # Google-level: Ensure text is not too long (browser TTS limit)
+        if len(text) > 500:
+            text = text[:497] + "..."
+            logger.debug("[TTS] Truncated long text to 500 chars")
+        
         now = time.time()
 
         # Dedup check — identical phrase spoken too recently.
@@ -63,6 +78,7 @@ class TTSEngine:
 
     def _worker(self):
         speak_count = 0
+        consecutive_failures = 0
         while True:
             try:
                 text = self._q.get(timeout=30.0)
@@ -78,15 +94,43 @@ class TTSEngine:
                     try:
                         future.result(timeout=2.0)
                         logger.debug("TTS spoken: %r", text[:60])
+                        consecutive_failures = 0  # Reset on success
                     except Exception as e:
-                        logger.error("TTS broadcast failed: %s", e)
+                        consecutive_failures += 1
+                        logger.error("TTS broadcast failed: %s (failures: %d)", e, consecutive_failures)
+                        # Google-level: Fallback to server-side TTS after 3 failures
+                        if consecutive_failures >= 3:
+                            try:
+                                from backend.server_tts import server_tts
+                                server_tts.speak_async(text)
+                                logger.info("TTS: Using server-side fallback for: %r", text[:60])
+                            except Exception as fallback_error:
+                                logger.error("TTS fallback also failed: %s", fallback_error)
                 except Exception as e:
-                    logger.error("TTS relay scheduling error: %s", e)
-            speak_count += 1
-            # Purge dedup dict every 200 speaks to prevent unbounded memory growth
-            if speak_count % 200 == 0:
+                    consecutive_failures += 1
+                    logger.error("TTS relay scheduling error: %s (failures: %d)", e, consecutive_failures)
+                    # Fallback to server TTS
+                    if consecutive_failures >= 3:
+                        try:
+                            from backend.server_tts import server_tts
+                            server_tts.speak_async(text)
+                        except Exception:
+                            pass
+            else:
+                # No broadcast available - use server TTS directly
+                try:
+                    from backend.server_tts import server_tts
+                    server_tts.speak_async(text)
+                except Exception:
+                    pass
+            
+            self._speak_count += 1
+            # Purge dedup dict every 100 speaks to prevent unbounded memory growth
+            # More frequent cleanup for better memory management
+            if self._speak_count % 100 == 0:
                 cutoff = time.time() - 60.0
                 self._last = {k: v for k, v in self._last.items() if v > cutoff}
+                logger.debug("TTS: cleaned dedup dict (kept %d entries)", len(self._last))
             self._q.task_done()
 
 
