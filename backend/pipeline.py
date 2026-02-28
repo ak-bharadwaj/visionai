@@ -664,10 +664,6 @@ class PipelineRunner:
                 from backend.tts_wrapper import safe_speak
                 safe_speak(tts_engine, "Warning. Possible step or drop ahead.", priority=True)
             except Exception:
-                try:
-                from backend.tts_wrapper import safe_speak
-                safe_speak(tts_engine, "Warning. Possible step or drop ahead.", priority=True)
-            except Exception:
                 tts_engine.speak("Warning. Possible step or drop ahead.", priority=True)
             stair_warned = True
 
@@ -679,10 +675,6 @@ class PipelineRunner:
         )
         if stability_filter.should_emit_failsafe():
             try:
-                from backend.tts_wrapper import safe_speak
-                safe_speak(tts_engine, FAILSAFE_MESSAGE, priority=True)
-            except Exception:
-                try:
                 from backend.tts_wrapper import safe_speak
                 safe_speak(tts_engine, FAILSAFE_MESSAGE, priority=True)
             except Exception:
