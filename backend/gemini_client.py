@@ -154,20 +154,29 @@ def ask_vision_with_fallback(question: str, frame: np.ndarray,
     return "I couldn't analyze the image. Please try again."
 
 
-def verify_color(frame: np.ndarray, region_hint: str = "center") -> Optional[str]:
+def verify_color(frame: np.ndarray, target_object: str = "person", region_hint: str = "center") -> Optional[str]:
     """
-    Use Gemini to verify/identify clothing color - NOT skin tone.
-    Returns color description or None.
+    Use Gemini to identify the color of the specified object in the frame.
+    For people, focuses on clothing (not skin). For other objects, describes
+    the dominant color of the object itself.
+    Returns a short color phrase or None.
     """
     if not GEMINI_ENABLED or frame is None:
         return None
-    
-    question = (
-        "What color is the SHIRT or CLOTHING the person is wearing? "
-        "NOT their skin tone or face. ONLY the clothing. "
-        "Answer with one color phrase like 'dark gray', 'black', 'light blue', 'white'. "
-        "Be precise - ignore skin color completely."
-    )
+
+    if target_object == "person":
+        question = (
+            "What color is the SHIRT or CLOTHING the person is wearing? "
+            "NOT their skin tone or face. ONLY the clothing. "
+            "Answer with one short color phrase like 'dark gray', 'black', 'light blue', 'white'. "
+            "Be precise — ignore skin color completely."
+        )
+    else:
+        question = (
+            f"What color is the {target_object} in the image? "
+            "Answer with one short color phrase like 'red', 'dark blue', 'light gray', 'brown'. "
+            "Be precise and concise."
+        )
     return ask_vision(question, frame)
 
 

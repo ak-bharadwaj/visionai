@@ -240,16 +240,41 @@ class Brain:
             logger.info("[Brain] route=color q=%r", question[:80])
             if frame is not None:
                 try:
-                    # Try Gemini first for AI-powered accuracy (when keys configured)
+                    # Determine the target object from detections or question
+                    target_obj = "person"  # default
+                    if detections:
+                        # Pick the most central/largest detection as the subject
+                        frame_cx = frame.shape[1] / 2
+                        frame_cy = frame.shape[0] / 2
+                        def _score(d):
+                            area = (d.x2 - d.x1) * (d.y2 - d.y1) if hasattr(d, 'x2') else 0
+                            dx = ((d.x1 + d.x2) / 2 - frame_cx) if hasattr(d, 'x1') else 999
+                            dy = ((d.y1 + d.y2) / 2 - frame_cy) if hasattr(d, 'y1') else 999
+                            dist = (dx**2 + dy**2) ** 0.5
+                            return area / (1.0 + dist * 0.02)
+                        best = max(detections, key=_score)
+                        target_obj = getattr(best, 'class_name', 'person')
+                    # Also check if the question mentions a specific object
+                    for word in q_lower.split():
+                        if word not in COLOR_KEYWORDS and len(word) > 3:
+                            # crude noun check — if a detected class name appears in question, use it
+                            for d in detections:
+                                if word in getattr(d, 'class_name', ''):
+                                    target_obj = d.class_name
+                                    break
+
+                    # Try Gemini first for AI-powered accuracy
                     from backend.gemini_client import verify_color, is_available
                     if is_available():
-                        gemini_color = verify_color(frame)
+                        gemini_color = verify_color(frame, target_object=target_obj)
                         if gemini_color:
-                            # Clean Gemini response - may include extra words
                             color_clean = gemini_color.strip().rstrip('.').lower()
-                            if len(color_clean) > 50:  # Too long, take first phrase
+                            if len(color_clean) > 60:
                                 color_clean = color_clean.split('.')[0].split(',')[0].strip()
-                            result = f"The person's clothing appears to be {color_clean}."
+                            if target_obj == "person":
+                                result = f"The person's clothing appears to be {color_clean}."
+                            else:
+                                result = f"The {target_obj} appears to be {color_clean}."
                             logger.info("[Brain] color (Gemini AI): %r", result)
                             self._history_append(question, result, _gen)
                             return result
